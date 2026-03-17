@@ -1,14 +1,14 @@
 /**
  * ai-pr-reviewer — core module
- * Uses Anthropic Claude via the official SDK.
- * Requires ANTHROPIC_API_KEY set as a GitHub Actions secret.
+ * Uses GitHub Models (free) via the OpenAI-compatible API.
+ * Requires GH_MODELS_TOKEN (PAT with models:read scope) as a GitHub Actions secret.
  */
 
-import Anthropic from "@anthropic-ai/sdk";
+import OpenAI from "openai";
 import { buildReviewPrompt } from "./utils/prompt.js";
 import { parseReview } from "./utils/parser.js";
 import { chunkPatch } from "./utils/chunker.js";
-import { loadConfig } from "./utils/config.js";
+import { loadConfig, GITHUB_MODELS_ENDPOINT } from "./utils/config.js";
 
 export async function reviewFiles(files, options = {}) {
   // Accept a pre-resolved config (from cli.js) or resolve from env + defaults
@@ -16,14 +16,20 @@ export async function reviewFiles(files, options = {}) {
 
   if (!config.apiKey) {
     throw new Error(
-      "No ANTHROPIC_API_KEY found.\n" +
-      "→ Get your key at: console.anthropic.com\n" +
-      "→ Add it as a GitHub Actions secret named ANTHROPIC_API_KEY\n" +
-      "→ Add to workflow env: ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}"
+      "No API key found.\n" +
+      "GitHub Models requires a PAT with models:read scope.\n" +
+      "→ Create one at: github.com/settings/tokens\n" +
+      "→ Add it as a GitHub Actions secret named GH_MODELS_TOKEN"
     );
   }
 
-  const client = new Anthropic({ apiKey: config.apiKey });
+  const client = new OpenAI({
+    baseURL: GITHUB_MODELS_ENDPOINT,
+    apiKey: config.apiKey,
+    defaultHeaders: {
+      "X-GitHub-Api-Version": "2022-11-28",
+    },
+  });
 
   const allResults = [];
 
@@ -41,28 +47,30 @@ export async function reviewFiles(files, options = {}) {
 
       let response;
       try {
-        response = await client.messages.create({
+        response = await client.chat.completions.create({
           model: config.model,
           max_tokens: 1024,
-          system: getSystemPrompt(),
-          messages: [{ role: "user", content: prompt }],
+          messages: [
+            { role: "system", content: getSystemPrompt() },
+            { role: "user",   content: prompt },
+          ],
         });
       } catch (err) {
         console.error(`  ⚠️  API call failed for ${file.filename}: ${err.message}`);
-        if (err.status)  console.error(`     Status: ${err.status}`);
-        if (err.error)   console.error(`     Detail: ${JSON.stringify(err.error, null, 2)}`);
+        if (err.status) console.error(`     Status: ${err.status}`);
+        if (err.error)  console.error(`     Detail: ${JSON.stringify(err.error, null, 2)}`);
         continue;
       }
 
-      // Anthropic SDK: response.content is an array of blocks
-      const textBlock = response.content?.find(b => b.type === "text");
-      if (!textBlock) {
-        console.warn(`  ⚠️  No text block in response for ${file.filename}`);
-        console.warn("     Full response:", JSON.stringify(response, null, 2));
+      // Guard: log full response if shape is unexpected
+      if (!response?.choices?.length) {
+        console.warn(`  ⚠️  Unexpected response shape for ${file.filename}:`);
+        console.warn("     ", JSON.stringify(response, null, 2));
         continue;
       }
 
-      const parsed = parseReview(textBlock.text, file.filename);
+      const text = response.choices[0].message?.content ?? "";
+      const parsed = parseReview(text, file.filename);
       fileComments.push(...parsed.comments);
     }
 

@@ -2,7 +2,10 @@
  * test-local.js — test the reviewer without a real PR
  *
  * Usage:
- *   ANTHROPIC_API_KEY=sk-ant-... node src/test-local.js
+ *   GH_MODELS_TOKEN=github_pat_... node src/test-local.js
+ *
+ * Get a PAT at: github.com/settings/tokens
+ * Required permission: Models → Read
  */
 
 import { reviewFiles } from "./index.js";
@@ -70,18 +73,20 @@ const MOCK_FILES = [
   },
 ];
 
-if (!process.env.ANTHROPIC_API_KEY) {
-  console.error("❌  Set ANTHROPIC_API_KEY before running.");
-  console.error("   Get your key at: console.anthropic.com");
+const token = process.env.GH_MODELS_TOKEN || process.env.GITHUB_TOKEN;
+if (!token) {
+  console.error("❌  Set GH_MODELS_TOKEN before running.");
+  console.error("   Create a PAT at: github.com/settings/tokens");
+  console.error("   Required permission: Models → Read");
   process.exit(1);
 }
 
 console.log("🤖  ai-pr-reviewer — local test run");
-console.log("📦  Model: claude-haiku-4-5-20251001 (cheapest — good for testing)\n");
+console.log("📦  Model: openai/gpt-4o-mini (GitHub Models — free)\n");
 
 const results = await reviewFiles(MOCK_FILES, {
-  apiKey: process.env.ANTHROPIC_API_KEY,
-  model: "claude-haiku-4-5-20251001",
+  apiKey: token,
+  model: "openai/gpt-4o-mini",
   skills: ["convention", "lint", "security", "logic", "performance"],
   failOnError: false,
   ignorePatterns: ["package-lock.json"],

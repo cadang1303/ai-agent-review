@@ -2,16 +2,21 @@ import { existsSync } from "fs";
 import { resolve } from "path";
 import { pathToFileURL } from "url";
 
-// Anthropic Claude models
-// Get your API key at: console.anthropic.com
-export const ANTHROPIC_MODELS = {
-  HAIKU:  "claude-haiku-4-5-20251001",  // fastest & cheapest — great for testing
-  SONNET: "claude-sonnet-4-6",          // best balance of quality and cost (recommended)
-  OPUS:   "claude-opus-4-6",            // most capable — for critical repos
+// GitHub Models endpoint — OpenAI-compatible, free for prototyping
+export const GITHUB_MODELS_ENDPOINT = "https://models.github.ai/inference";
+
+// Free models on GitHub Models — names MUST include publisher prefix
+// Browse all at: github.com/marketplace/models
+export const GITHUB_MODELS = {
+  GPT_4O_MINI:   "openai/gpt-4o-mini",                  // default — free, fast, great for code
+  GPT_4O:        "openai/gpt-4o",                        // more powerful, still free
+  LLAMA_3_3_70B: "meta/Meta-Llama-3.3-70B-Instruct",    // open-source, strong at code
+  PHI_4_MINI:    "microsoft/Phi-4-mini-instruct",        // lightweight + very fast
+  DEEPSEEK_R1:   "deepseek/DeepSeek-R1",                 // strong reasoning
 };
 
 const DEFAULTS = {
-  model: ANTHROPIC_MODELS.HAIKU,        // cheapest for testing; change to SONNET for production
+  model: GITHUB_MODELS.GPT_4O_MINI,
   skills: ["convention", "lint", "security", "logic", "tests"],
   ignorePatterns: [
     "package-lock.json",
@@ -34,13 +39,16 @@ const DEFAULTS = {
 export async function loadConfig(overrides = {}) {
   let config = { ...DEFAULTS };
 
-  // Read ANTHROPIC_API_KEY from env — set this as a GitHub Actions secret
-  if (process.env.ANTHROPIC_API_KEY)                  config.apiKey      = process.env.ANTHROPIC_API_KEY;
+  // GH_MODELS_TOKEN = PAT with models:read scope (required for GitHub Models)
+  // GITHUB_TOKEN    = fallback (auto-set by Actions — still needs models:read if used)
+  if (process.env.GH_MODELS_TOKEN)                    config.apiKey      = process.env.GH_MODELS_TOKEN;
+  else if (process.env.GITHUB_TOKEN)                  config.apiKey      = process.env.GITHUB_TOKEN;
+
   if (process.env.REVIEWER_MODEL)                     config.model       = process.env.REVIEWER_MODEL;
   if (process.env.REVIEWER_SKILLS)                    config.skills      = process.env.REVIEWER_SKILLS.split(",").map(s => s.trim());
   if (process.env.REVIEWER_FAIL_ON_ERROR === "false") config.failOnError = false;
 
-  // Optional project-level config file (ai-reviewer.config.js in project root)
+  // Optional project-level config file
   const configPath = resolve(process.cwd(), "ai-reviewer.config.js");
   if (existsSync(configPath)) {
     try {
@@ -52,7 +60,7 @@ export async function loadConfig(overrides = {}) {
     }
   }
 
-  // Programmatic overrides win over everything (used by test-local.js and library callers)
+  // Programmatic overrides win over everything
   config = { ...config, ...overrides };
 
   return config;

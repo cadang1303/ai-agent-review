@@ -3,16 +3,18 @@
  * Drop this in your project root to override defaults.
  */
 export default {
-  // Anthropic Claude models:
-  // "claude-haiku-4-5-20251001"  → fastest & cheapest (default — good for testing)
-  // "claude-sonnet-4-6"          → best balance of quality and cost (recommended for production)
-  // "claude-opus-4-6"            → most capable (for critical/security-sensitive repos)
-  model: "claude-haiku-4-5-20251001",
+  // GitHub Models — model names MUST include publisher prefix
+  // "openai/gpt-4o-mini"                 → default, free, fast, great for code
+  // "openai/gpt-4o"                      → more powerful, still free
+  // "meta/Meta-Llama-3.3-70B-Instruct"  → open-source, strong at code
+  // "deepseek/DeepSeek-R1"              → strong reasoning
+  // "microsoft/Phi-4-mini-instruct"     → lightweight, very fast
+  model: "openai/gpt-4o-mini",
 
-  // Skills: convention | lint | security | logic | tests | performance | types
+  // Built-in skills: convention | lint | security | logic | tests | performance | types
+  // Add custom skills by creating .md files in .ai-reviewer-skills/
   skills: ["convention", "lint", "security", "logic", "tests"],
 
-  // Set to false to post comments without blocking the merge
   failOnError: true,
 
   ignorePatterns: [
