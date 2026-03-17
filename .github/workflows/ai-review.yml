@@ -12,6 +12,7 @@ jobs:
     permissions:
       pull-requests: write
       contents: read
+      models: read
 
     steps:
       - name: Checkout
@@ -25,11 +26,11 @@ jobs:
           node-version: "20"
 
       - name: Install reviewer dependencies
-        working-directory: .ai-reviewer
+        # working-directory: .ai-reviewer
         run: npm install
 
       - name: Run AI Review
-        working-directory: .ai-reviewer
+        # working-directory: .ai-reviewer
         env:
           # ── Required: PAT with models:read scope ───────────────────────────
           # 1. Go to: github.com/settings/tokens → Generate new token (fine-grained)
