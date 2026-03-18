@@ -4,24 +4,32 @@
 
 import { SUMMARY_MARKER } from "./summary.js";
 
+// Bot login names GitHub Actions uses — checked against user.login
+const BOT_LOGINS = new Set(["github-actions[bot]", "github-actions"]);
+
+function isBotComment(user) {
+  if (!user) return false;
+  // Match by login (most reliable) OR type field
+  return (
+    BOT_LOGINS.has(user.login) ||
+    user.login?.endsWith("[bot]") ||
+    user.type === "Bot"
+  );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Summary comment management
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * Deletes ALL previous summary comments from this bot on this PR.
- *
- * Identification strategy (both must be true):
- *   1. The comment body contains the hidden SUMMARY_MARKER string
- *   2. The comment was posted by a Bot user
- *
- * Paginates through all comments so it works on PRs with many comments.
+ * Paginates through ALL comments — works even on busy PRs.
  */
 export async function deletePreviousSummary(
   octokit,
   { owner, repo, pullNumber }
 ) {
-  console.log("🧹  Checking for previous summary comment...");
+  console.log("🧹  Scanning all comments for previous summary...");
 
   let page = 1;
   let deleted = 0;
@@ -37,28 +45,39 @@ export async function deletePreviousSummary(
 
     if (comments.length === 0) break;
 
+    // Log every comment briefly so we can diagnose issues
     for (const c of comments) {
       const hasMarker = c.body?.includes(SUMMARY_MARKER);
-      const isBot = c.user?.type === "Bot";
+      const isBot = isBotComment(c.user);
 
-      // Log what we see to help debug
-      if (hasMarker) {
-        console.log(
-          `   Found marker in comment #${c.id} — user: "${c.user?.login}" type: "${c.user?.type}"`
-        );
-      }
+      console.log(
+        `   #${c.id} login="${c.user?.login}" type="${c.user?.type}"` +
+          ` hasMarker=${hasMarker} isBot=${isBot}`
+      );
 
       if (hasMarker && isBot) {
         try {
           await octokit.issues.deleteComment({ owner, repo, comment_id: c.id });
+          console.log(`   ✅ Deleted summary comment #${c.id}`);
+          deleted++;
+        } catch (err) {
+          console.warn(`   ⚠️  Failed to delete #${c.id}: ${err.message}`);
+        }
+      } else if (hasMarker && !isBot) {
+        // Marker found but not a bot — log so we can adjust the check
+        console.warn(
+          `   ⚠️  Found marker in #${c.id} but not identified as bot — skipping`
+        );
+        console.warn(`       login="${c.user?.login}" type="${c.user?.type}"`);
+        // Delete it anyway — if it has our marker, it's ours
+        try {
+          await octokit.issues.deleteComment({ owner, repo, comment_id: c.id });
           console.log(
-            `   ✅ Deleted previous summary (comment #${c.id} by ${c.user?.login})`
+            `   ✅ Deleted summary comment #${c.id} (marker match, ignoring bot check)`
           );
           deleted++;
         } catch (err) {
-          console.warn(
-            `   ⚠️  Could not delete comment #${c.id}: ${err.message}`
-          );
+          console.warn(`   ⚠️  Failed to delete #${c.id}: ${err.message}`);
         }
       }
     }
@@ -69,6 +88,8 @@ export async function deletePreviousSummary(
 
   if (deleted === 0) {
     console.log("   No previous summary found");
+  } else {
+    console.log(`   Removed ${deleted} previous summary comment(s)`);
   }
 }
 
@@ -81,10 +102,7 @@ const REVIEW_THREADS_QUERY = `
     repository(owner: $owner, name: $repo) {
       pullRequest(number: $number) {
         reviewThreads(first: 100, after: $cursor) {
-          pageInfo {
-            hasNextPage
-            endCursor
-          }
+          pageInfo { hasNextPage endCursor }
           nodes {
             isResolved
             isOutdated
@@ -94,10 +112,7 @@ const REVIEW_THREADS_QUERY = `
                 line
                 originalLine
                 body
-                author {
-                  login
-                  ... on Bot { login }
-                }
+                author { login ... on Bot { login } }
               }
             }
           }
@@ -109,11 +124,7 @@ const REVIEW_THREADS_QUERY = `
 
 /**
  * Returns a Set of fingerprints for bot inline comments that are UNRESOLVED.
- * Fingerprint: "<filename>:<line>:<skill>"  e.g. "src/auth.js:12:security"
- *
- *   isResolved = true  → skip from set → bot re-flags if issue still exists
- *   isResolved = false → add to set    → bot skips re-posting
- *   isOutdated = true  → skip from set → bot re-flags on the new line
+ * Fingerprint: "<filename>:<line>:<skill>"
  */
 export async function getUnresolvedBotComments(
   octokit,
@@ -134,10 +145,8 @@ export async function getUnresolvedBotComments(
         cursor,
       });
     } catch (err) {
-      console.warn(
-        `⚠️  Could not fetch review threads via GraphQL: ${err.message}`
-      );
-      console.warn("   All issues will be re-posted on this run.");
+      console.warn(`⚠️  GraphQL fetch failed: ${err.message}`);
+      console.warn("   Deduplication disabled for this run.");
       return unresolved;
     }
 
@@ -145,16 +154,15 @@ export async function getUnresolvedBotComments(
     if (!threads) break;
 
     for (const thread of threads.nodes) {
-      if (thread.isResolved) continue; // developer resolved → let bot re-flag
-      if (thread.isOutdated) continue; // outdated line     → let bot re-flag
+      if (thread.isResolved) continue;
+      if (thread.isOutdated) continue;
 
       const comment = thread.comments?.nodes?.[0];
       if (!comment) continue;
 
       const authorLogin = comment.author?.login ?? "";
-      const isBot =
-        authorLogin === "github-actions[bot]" || authorLogin.endsWith("[bot]");
-      if (!isBot) continue;
+      if (!authorLogin.endsWith("[bot]") && !BOT_LOGINS.has(authorLogin))
+        continue;
 
       const skillMatch = comment.body?.match(/\*\*\[([A-Z-]+)\]\*\*/);
       if (!skillMatch) continue;
