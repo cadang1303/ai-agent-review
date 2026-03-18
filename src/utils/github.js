@@ -1,15 +1,5 @@
 /**
  * github.js — GitHub API helpers for comment management
- *
- * Handles two things:
- *   1. deletePreviousSummary        — find and delete the bot's last summary comment
- *   2. getUnresolvedBotComments     — return fingerprints of bot inline comments that
- *                                     are still OPEN (not resolved by the developer)
- *
- * Why GraphQL for resolution status?
- *   The GitHub REST API does not expose whether a review thread is resolved.
- *   Only the GraphQL API has `reviewThreads { isResolved }`.
- *   So we use REST for everything except thread resolution.
  */
 
 import { SUMMARY_MARKER } from "./summary.js";
@@ -19,8 +9,13 @@ import { SUMMARY_MARKER } from "./summary.js";
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Deletes the bot's previous summary comment on this PR, if one exists.
- * Identified by the hidden SUMMARY_MARKER inside the comment body.
+ * Deletes ALL previous summary comments from this bot on this PR.
+ *
+ * Identification strategy (both must be true):
+ *   1. The comment body contains the hidden SUMMARY_MARKER string
+ *   2. The comment was posted by a Bot user
+ *
+ * Paginates through all comments so it works on PRs with many comments.
  */
 export async function deletePreviousSummary(
   octokit,
@@ -28,25 +23,51 @@ export async function deletePreviousSummary(
 ) {
   console.log("🧹  Checking for previous summary comment...");
 
-  const { data: comments } = await octokit.issues.listComments({
-    owner,
-    repo,
-    issue_number: pullNumber,
-    per_page: 100,
-  });
+  let page = 1;
+  let deleted = 0;
 
-  const previous = comments.find(
-    (c) => c.body?.includes(SUMMARY_MARKER) && c.user?.type === "Bot"
-  );
-
-  if (previous) {
-    await octokit.issues.deleteComment({
+  while (true) {
+    const { data: comments } = await octokit.issues.listComments({
       owner,
       repo,
-      comment_id: previous.id,
+      issue_number: pullNumber,
+      per_page: 100,
+      page,
     });
-    console.log(`   ✅ Deleted previous summary (comment #${previous.id})`);
-  } else {
+
+    if (comments.length === 0) break;
+
+    for (const c of comments) {
+      const hasMarker = c.body?.includes(SUMMARY_MARKER);
+      const isBot = c.user?.type === "Bot";
+
+      // Log what we see to help debug
+      if (hasMarker) {
+        console.log(
+          `   Found marker in comment #${c.id} — user: "${c.user?.login}" type: "${c.user?.type}"`
+        );
+      }
+
+      if (hasMarker && isBot) {
+        try {
+          await octokit.issues.deleteComment({ owner, repo, comment_id: c.id });
+          console.log(
+            `   ✅ Deleted previous summary (comment #${c.id} by ${c.user?.login})`
+          );
+          deleted++;
+        } catch (err) {
+          console.warn(
+            `   ⚠️  Could not delete comment #${c.id}: ${err.message}`
+          );
+        }
+      }
+    }
+
+    if (comments.length < 100) break;
+    page++;
+  }
+
+  if (deleted === 0) {
     console.log("   No previous summary found");
   }
 }
@@ -88,16 +109,11 @@ const REVIEW_THREADS_QUERY = `
 
 /**
  * Returns a Set of fingerprints for bot inline comments that are UNRESOLVED.
+ * Fingerprint: "<filename>:<line>:<skill>"  e.g. "src/auth.js:12:security"
  *
- * Fingerprint format:  "<filename>:<line>:<skill>"
- * e.g. "src/auth.js:12:security"
- *
- * Logic:
- *   - isResolved = true  → developer marked it resolved → NOT in the set
- *                          → bot will re-flag if the issue still exists in code
- *   - isResolved = false → thread still open → in the set → bot skips re-posting
- *   - isOutdated = true  → comment is on a line that no longer exists in the diff
- *                          → NOT in the set → bot will re-flag on the new line
+ *   isResolved = true  → skip from set → bot re-flags if issue still exists
+ *   isResolved = false → add to set    → bot skips re-posting
+ *   isOutdated = true  → skip from set → bot re-flags on the new line
  */
 export async function getUnresolvedBotComments(
   octokit,
@@ -118,7 +134,6 @@ export async function getUnresolvedBotComments(
         cursor,
       });
     } catch (err) {
-      // GraphQL errors are non-fatal — fall back to no deduplication
       console.warn(
         `⚠️  Could not fetch review threads via GraphQL: ${err.message}`
       );
@@ -130,31 +145,23 @@ export async function getUnresolvedBotComments(
     if (!threads) break;
 
     for (const thread of threads.nodes) {
-      // Skip resolved threads — developer marked this as done
-      if (thread.isResolved) continue;
-
-      // Skip outdated threads — the line no longer exists in the current diff
-      if (thread.isOutdated) continue;
+      if (thread.isResolved) continue; // developer resolved → let bot re-flag
+      if (thread.isOutdated) continue; // outdated line     → let bot re-flag
 
       const comment = thread.comments?.nodes?.[0];
       if (!comment) continue;
 
-      // Only care about comments from bot accounts
       const authorLogin = comment.author?.login ?? "";
       const isBot =
-        authorLogin === "github-actions[bot]" ||
-        authorLogin.endsWith("[bot]") ||
-        authorLogin === "github-actions";
+        authorLogin === "github-actions[bot]" || authorLogin.endsWith("[bot]");
       if (!isBot) continue;
 
-      // Extract skill tag from body: "🔴 **[SECURITY]** ..."
       const skillMatch = comment.body?.match(/\*\*\[([A-Z-]+)\]\*\*/);
       if (!skillMatch) continue;
 
       const skill = skillMatch[1].toLowerCase();
       const line = comment.line ?? comment.originalLine;
       const fingerprint = `${comment.path}:${line}:${skill}`;
-
       unresolved.add(fingerprint);
     }
 
