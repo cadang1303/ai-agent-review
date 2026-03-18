@@ -40,6 +40,9 @@ async function testModelAccess(config) {
 async function main() {
   if (!process.env.GH_MODELS_TOKEN && !process.env.GITHUB_TOKEN) {
     console.error("❌  Missing GH_MODELS_TOKEN.");
+    console.error(
+      "    → Create a PAT at: github.com/settings/tokens (Models → Read)"
+    );
     process.exit(1);
   }
   if (!process.env.GITHUB_TOKEN) {
@@ -56,7 +59,6 @@ async function main() {
   const pullNumber = parseInt(
     process.env.PR_NUMBER || process.env.GITHUB_REF?.match(/\/(\d+)\//)?.[1]
   );
-
   if (!pullNumber || isNaN(pullNumber)) {
     console.error("❌  Could not determine PR number. Set PR_NUMBER env var.");
     process.exit(1);
@@ -77,6 +79,7 @@ async function main() {
 
   console.log(`🔍  Fetching PR #${pullNumber} in ${owner}/${repo}\n`);
 
+  // ── Step 1: fetch all PR data in parallel ──────────────────────────────────
   const [{ data: pr }, { data: files }, unresolvedComments] = await Promise.all(
     [
       octokit.pulls.get({ owner, repo, pull_number: pullNumber }),
@@ -93,18 +96,22 @@ async function main() {
   const commitSha = pr.head.sha;
   console.log(`📄  Found ${files.length} changed file(s)\n`);
 
-  // ── Run AI review ──────────────────────────────────────────────────────────
+  // ── Step 2: delete old summary BEFORE running the AI review ───────────────
+  // Do this early so it's gone even if reviewFiles takes a long time
+  await deletePreviousSummary(octokit, { owner, repo, pullNumber });
+
+  // ── Step 3: run AI review ──────────────────────────────────────────────────
   const results = await reviewFiles(files, config);
 
-  // ── Post inline comments ───────────────────────────────────────────────────
-  // postedThisRun tracks fingerprints posted in THIS run to prevent the AI
-  // returning the same issue twice for the same line (e.g. from chunking).
+  // ── Step 4: post inline comments with deduplication ───────────────────────
+  // postedThisRun prevents the same fingerprint being posted twice in one run
+  // (can happen when the AI returns the same issue from two diff chunks)
   const postedThisRun = new Set();
 
   let totalErrors = 0;
   let totalWarnings = 0;
-  let skipped = 0;
-  let reposted = 0;
+  let skippedOld = 0;
+  let skippedDup = 0;
   const allComments = [];
 
   for (const { filename, comments } of results) {
@@ -114,23 +121,22 @@ async function main() {
 
       const fingerprint = `${filename}:${comment.line}:${comment.skill}`;
 
-      // Skip if already open and unresolved from a previous run
+      // Already open and unresolved from a previous run — don't spam
       if (unresolvedComments.has(fingerprint)) {
-        console.log(`   ⏭️  Skipping (unresolved): ${fingerprint}`);
-        skipped++;
+        console.log(`   ⏭️  Unresolved (skip): ${fingerprint}`);
+        skippedOld++;
         continue;
       }
 
-      // Skip if we already posted this exact fingerprint in this run (dedup within run)
+      // Already posted this exact fingerprint earlier in this run
       if (postedThisRun.has(fingerprint)) {
-        console.log(`   ⏭️  Skipping (duplicate in this run): ${fingerprint}`);
-        skipped++;
+        console.log(`   ⏭️  Duplicate in run (skip): ${fingerprint}`);
+        skippedDup++;
         continue;
       }
 
       const emoji =
         { error: "🔴", warning: "🟡", info: "🔵" }[comment.severity] ?? "⚪";
-
       try {
         await octokit.pulls.createReviewComment({
           owner,
@@ -141,24 +147,17 @@ async function main() {
           line: comment.line,
           commit_id: commitSha,
         });
-
-        postedThisRun.add(fingerprint); // mark as posted so we don't post it again
+        postedThisRun.add(fingerprint);
         allComments.push({ filename, ...comment });
-
-        // If it was previously resolved but the AI found it again — count as re-post
-        if (!unresolvedComments.has(fingerprint)) reposted++;
       } catch (err) {
-        // Line may not be in the diff — log and skip
         console.warn(
-          `   ⚠️  Could not post comment on ${filename}:${comment.line} — ${err.message}`
+          `   ⚠️  Could not post on ${filename}:${comment.line} — ${err.message}`
         );
       }
     }
   }
 
-  // ── Delete old summary → post fresh one ───────────────────────────────────
-  await deletePreviousSummary(octokit, { owner, repo, pullNumber });
-
+  // ── Step 5: post fresh summary ─────────────────────────────────────────────
   const summary = buildSummary(results, totalErrors, totalWarnings, config);
   await octokit.issues.createComment({
     owner,
@@ -168,11 +167,11 @@ async function main() {
   });
 
   console.log(`\n✅  Review complete`);
-  console.log(`   🔴 Errors:                   ${totalErrors}`);
-  console.log(`   🟡 Warnings:                 ${totalWarnings}`);
-  console.log(`   💬 New comments posted:      ${allComments.length}`);
-  console.log(`   ⏭️  Skipped (unresolved/dup): ${skipped}`);
-  console.log(`   🔁 Re-posted (was resolved): ${reposted}`);
+  console.log(`   🔴 Errors:                      ${totalErrors}`);
+  console.log(`   🟡 Warnings:                    ${totalWarnings}`);
+  console.log(`   💬 New comments posted:         ${allComments.length}`);
+  console.log(`   ⏭️  Skipped (still open):        ${skippedOld}`);
+  console.log(`   ⏭️  Skipped (dup in this run):   ${skippedDup}`);
 
   if (config.failOnError && totalErrors > 0) {
     console.log(`\n❌  Failing CI: ${totalErrors} error(s) found`);
