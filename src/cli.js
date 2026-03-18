@@ -1,12 +1,4 @@
 #!/usr/bin/env node
-/**
- * CLI entry point — runs inside GitHub Actions.
- *
- * Deduplication logic:
- *   - If a bot comment exists and is UNRESOLVED → skip re-posting (already flagged)
- *   - If a bot comment was RESOLVED by the developer → re-post if issue still in code
- *   - If a bot comment is OUTDATED (line no longer in diff) → re-post on new line
- */
 
 import OpenAI from "openai";
 import { Octokit } from "@octokit/rest";
@@ -46,13 +38,8 @@ async function testModelAccess(config) {
 }
 
 async function main() {
-  // ── Validate env vars ──────────────────────────────────────────────────────
   if (!process.env.GH_MODELS_TOKEN && !process.env.GITHUB_TOKEN) {
     console.error("❌  Missing GH_MODELS_TOKEN.");
-    console.error(
-      "    → Create a PAT at: github.com/settings/tokens (Models → Read)"
-    );
-    console.error("    → Add as repo secret: GH_MODELS_TOKEN");
     process.exit(1);
   }
   if (!process.env.GITHUB_TOKEN) {
@@ -90,7 +77,6 @@ async function main() {
 
   console.log(`🔍  Fetching PR #${pullNumber} in ${owner}/${repo}\n`);
 
-  // Fetch PR metadata, changed files, and unresolved bot threads in parallel
   const [{ data: pr }, { data: files }, unresolvedComments] = await Promise.all(
     [
       octokit.pulls.get({ owner, repo, pull_number: pullNumber }),
@@ -111,6 +97,10 @@ async function main() {
   const results = await reviewFiles(files, config);
 
   // ── Post inline comments ───────────────────────────────────────────────────
+  // postedThisRun tracks fingerprints posted in THIS run to prevent the AI
+  // returning the same issue twice for the same line (e.g. from chunking).
+  const postedThisRun = new Set();
+
   let totalErrors = 0;
   let totalWarnings = 0;
   let skipped = 0;
@@ -124,14 +114,20 @@ async function main() {
 
       const fingerprint = `${filename}:${comment.line}:${comment.skill}`;
 
+      // Skip if already open and unresolved from a previous run
       if (unresolvedComments.has(fingerprint)) {
-        // Thread is still open and unresolved — don't spam the same comment again
+        console.log(`   ⏭️  Skipping (unresolved): ${fingerprint}`);
         skipped++;
         continue;
       }
 
-      // Either a new issue, or one the developer resolved (and the bug is back)
-      const wasResolved = !unresolvedComments.has(fingerprint);
+      // Skip if we already posted this exact fingerprint in this run (dedup within run)
+      if (postedThisRun.has(fingerprint)) {
+        console.log(`   ⏭️  Skipping (duplicate in this run): ${fingerprint}`);
+        skipped++;
+        continue;
+      }
+
       const emoji =
         { error: "🔴", warning: "🟡", info: "🔵" }[comment.severity] ?? "⚪";
 
@@ -145,10 +141,17 @@ async function main() {
           line: comment.line,
           commit_id: commitSha,
         });
+
+        postedThisRun.add(fingerprint); // mark as posted so we don't post it again
         allComments.push({ filename, ...comment });
-        if (wasResolved) reposted++;
-      } catch {
-        // Line no longer in diff — skip silently
+
+        // If it was previously resolved but the AI found it again — count as re-post
+        if (!unresolvedComments.has(fingerprint)) reposted++;
+      } catch (err) {
+        // Line may not be in the diff — log and skip
+        console.warn(
+          `   ⚠️  Could not post comment on ${filename}:${comment.line} — ${err.message}`
+        );
       }
     }
   }
@@ -165,10 +168,10 @@ async function main() {
   });
 
   console.log(`\n✅  Review complete`);
-  console.log(`   🔴 Errors:                  ${totalErrors}`);
-  console.log(`   🟡 Warnings:                ${totalWarnings}`);
-  console.log(`   💬 New comments posted:     ${allComments.length}`);
-  console.log(`   ⏭️  Skipped (still open):    ${skipped}`);
+  console.log(`   🔴 Errors:                   ${totalErrors}`);
+  console.log(`   🟡 Warnings:                 ${totalWarnings}`);
+  console.log(`   💬 New comments posted:      ${allComments.length}`);
+  console.log(`   ⏭️  Skipped (unresolved/dup): ${skipped}`);
   console.log(`   🔁 Re-posted (was resolved): ${reposted}`);
 
   if (config.failOnError && totalErrors > 0) {
