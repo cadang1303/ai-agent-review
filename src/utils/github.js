@@ -1,39 +1,101 @@
 /**
- * github.js — GitHub API helpers for comment management
+ * github.js — GitHub API helpers
  */
 
 import { SUMMARY_MARKER } from "./summary.js";
-
-// Bot login names GitHub Actions uses — checked against user.login
-const BOT_LOGINS = new Set(["github-actions[bot]", "github-actions"]);
-
-function isBotComment(user) {
-  if (!user) return false;
-  // Match by login (most reliable) OR type field
-  return (
-    BOT_LOGINS.has(user.login) ||
-    user.login?.endsWith("[bot]") ||
-    user.type === "Bot"
-  );
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Summary comment management
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Deletes ALL previous summary comments from this bot on this PR.
- * Paginates through ALL comments — works even on busy PRs.
+ * Finds and deletes ALL previous summary comments.
+ * Uses GraphQL to get full (untruncated) comment bodies and handles any
+ * number of comments efficiently in one query.
  */
 export async function deletePreviousSummary(
   octokit,
   { owner, repo, pullNumber }
 ) {
-  console.log("🧹  Scanning all comments for previous summary...");
+  console.log("🧹  Scanning for previous summary comments (GraphQL)...");
 
-  let page = 1;
+  // GraphQL returns full body text — REST API truncates long comment bodies
+  const query = `
+    query GetIssueComments($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
+      repository(owner: $owner, name: $repo) {
+        pullRequest(number: $number) {
+          comments(first: 100, after: $cursor) {
+            pageInfo { hasNextPage endCursor }
+            nodes {
+              databaseId
+              body
+              author { login }
+            }
+          }
+        }
+      }
+    }
+  `;
+
+  let cursor = null;
   let deleted = 0;
 
+  while (true) {
+    let response;
+    try {
+      response = await octokit.graphql(query, {
+        owner,
+        repo,
+        number: pullNumber,
+        cursor,
+      });
+    } catch (err) {
+      console.warn(`⚠️  GraphQL comment fetch failed: ${err.message}`);
+      console.warn("    Falling back to REST for summary deletion...");
+      await deletePreviousSummaryREST(octokit, { owner, repo, pullNumber });
+      return;
+    }
+
+    const comments = response?.repository?.pullRequest?.comments;
+    if (!comments) break;
+
+    for (const c of comments.nodes) {
+      const hasMarker = c.body?.includes(SUMMARY_MARKER);
+      console.log(
+        `   #${c.databaseId} author="${c.author?.login}" hasMarker=${hasMarker}`
+      );
+
+      if (hasMarker) {
+        try {
+          await octokit.issues.deleteComment({
+            owner,
+            repo,
+            comment_id: c.databaseId,
+          });
+          console.log(`   ✅ Deleted summary #${c.databaseId}`);
+          deleted++;
+        } catch (err) {
+          console.warn(
+            `   ⚠️  Could not delete #${c.databaseId}: ${err.message}`
+          );
+        }
+      }
+    }
+
+    if (!comments.pageInfo.hasNextPage) break;
+    cursor = comments.pageInfo.endCursor;
+  }
+
+  console.log(
+    deleted === 0
+      ? "   No previous summary found"
+      : `   Removed ${deleted} old summary comment(s)`
+  );
+}
+
+// REST fallback in case GraphQL fails
+async function deletePreviousSummaryREST(octokit, { owner, repo, pullNumber }) {
+  let page = 1;
   while (true) {
     const { data: comments } = await octokit.issues.listComments({
       owner,
@@ -42,59 +104,24 @@ export async function deletePreviousSummary(
       per_page: 100,
       page,
     });
-
     if (comments.length === 0) break;
-
-    // Log every comment briefly so we can diagnose issues
     for (const c of comments) {
-      const hasMarker = c.body?.includes(SUMMARY_MARKER);
-      const isBot = isBotComment(c.user);
-
-      console.log(
-        `   #${c.id} login="${c.user?.login}" type="${c.user?.type}"` +
-          ` hasMarker=${hasMarker} isBot=${isBot}`
-      );
-
-      if (hasMarker && isBot) {
+      if (c.body?.includes(SUMMARY_MARKER)) {
         try {
           await octokit.issues.deleteComment({ owner, repo, comment_id: c.id });
-          console.log(`   ✅ Deleted summary comment #${c.id}`);
-          deleted++;
+          console.log(`   ✅ Deleted summary #${c.id} (REST fallback)`);
         } catch (err) {
-          console.warn(`   ⚠️  Failed to delete #${c.id}: ${err.message}`);
-        }
-      } else if (hasMarker && !isBot) {
-        // Marker found but not a bot — log so we can adjust the check
-        console.warn(
-          `   ⚠️  Found marker in #${c.id} but not identified as bot — skipping`
-        );
-        console.warn(`       login="${c.user?.login}" type="${c.user?.type}"`);
-        // Delete it anyway — if it has our marker, it's ours
-        try {
-          await octokit.issues.deleteComment({ owner, repo, comment_id: c.id });
-          console.log(
-            `   ✅ Deleted summary comment #${c.id} (marker match, ignoring bot check)`
-          );
-          deleted++;
-        } catch (err) {
-          console.warn(`   ⚠️  Failed to delete #${c.id}: ${err.message}`);
+          console.warn(`   ⚠️  Could not delete #${c.id}: ${err.message}`);
         }
       }
     }
-
     if (comments.length < 100) break;
     page++;
-  }
-
-  if (deleted === 0) {
-    console.log("   No previous summary found");
-  } else {
-    console.log(`   Removed ${deleted} previous summary comment(s)`);
   }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Unresolved inline comment detection (via GraphQL)
+// Unresolved inline comment detection (GraphQL)
 // ─────────────────────────────────────────────────────────────────────────────
 
 const REVIEW_THREADS_QUERY = `
@@ -111,8 +138,9 @@ const REVIEW_THREADS_QUERY = `
                 path
                 line
                 originalLine
+                originalStartLine
                 body
-                author { login ... on Bot { login } }
+                author { login }
               }
             }
           }
@@ -123,8 +151,11 @@ const REVIEW_THREADS_QUERY = `
 `;
 
 /**
- * Returns a Set of fingerprints for bot inline comments that are UNRESOLVED.
- * Fingerprint: "<filename>:<line>:<skill>"
+ * Returns a Set of fingerprints for unresolved bot inline comments.
+ * Fingerprint: "<path>:<line>:<skill>"
+ *
+ * Handles null lines (multi-line comments) by falling back to originalLine
+ * and then originalStartLine so fingerprints are never "path:null:skill".
  */
 export async function getUnresolvedBotComments(
   octokit,
@@ -145,7 +176,7 @@ export async function getUnresolvedBotComments(
         cursor,
       });
     } catch (err) {
-      console.warn(`⚠️  GraphQL fetch failed: ${err.message}`);
+      console.warn(`⚠️  GraphQL thread fetch failed: ${err.message}`);
       console.warn("   Deduplication disabled for this run.");
       return unresolved;
     }
@@ -154,29 +185,35 @@ export async function getUnresolvedBotComments(
     if (!threads) break;
 
     for (const thread of threads.nodes) {
-      if (thread.isResolved) continue;
-      if (thread.isOutdated) continue;
+      if (thread.isResolved) continue; // resolved → allow re-flagging
+      if (thread.isOutdated) continue; // outdated → allow re-flagging on new line
 
       const comment = thread.comments?.nodes?.[0];
       if (!comment) continue;
 
       const authorLogin = comment.author?.login ?? "";
-      if (!authorLogin.endsWith("[bot]") && !BOT_LOGINS.has(authorLogin))
-        continue;
+      if (!authorLogin.endsWith("[bot]")) continue;
 
       const skillMatch = comment.body?.match(/\*\*\[([A-Z-]+)\]\*\*/);
       if (!skillMatch) continue;
 
       const skill = skillMatch[1].toLowerCase();
-      const line = comment.line ?? comment.originalLine;
+
+      // Resolve line number — multi-line comments can have null `line`
+      const line =
+        comment.line ?? comment.originalLine ?? comment.originalStartLine;
+
+      if (!line) continue; // genuinely no line info — skip
+
       const fingerprint = `${comment.path}:${line}:${skill}`;
       unresolved.add(fingerprint);
+      console.log(`   Unresolved: ${fingerprint}`);
     }
 
     if (!threads.pageInfo.hasNextPage) break;
     cursor = threads.pageInfo.endCursor;
   }
 
-  console.log(`   Found ${unresolved.size} unresolved bot comment(s)\n`);
+  console.log(`   Total unresolved: ${unresolved.size}\n`);
   return unresolved;
 }
