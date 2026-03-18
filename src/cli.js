@@ -1,14 +1,11 @@
 #!/usr/bin/env node
-/**
- * CLI entry point — runs inside GitHub Actions.
- * Requires ANTHROPIC_API_KEY and GITHUB_TOKEN secrets.
- */
 
 import Anthropic from "@anthropic-ai/sdk";
 import { Octokit } from "@octokit/rest";
 import { reviewFiles } from "./index.js";
 import { loadConfig } from "./utils/config.js";
 import { buildSummary } from "./utils/summary.js";
+import { deletePreviousSummary, getUnresolvedBotComments } from "./utils/github.js";
 
 async function testModelAccess(config) {
   console.log(`🧪  Testing model access: ${config.model}`);
@@ -32,7 +29,6 @@ async function testModelAccess(config) {
 }
 
 async function main() {
-  // ── Validate required env vars ────────────────────────────────────────────
   if (!process.env.ANTHROPIC_API_KEY) {
     console.error("❌  Missing ANTHROPIC_API_KEY.");
     console.error("    → Get your key at: console.anthropic.com");
@@ -49,12 +45,10 @@ async function main() {
   }
 
   const config = await loadConfig();
-
   const [owner, repo] = process.env.GITHUB_REPOSITORY.split("/");
   const pullNumber = parseInt(
     process.env.PR_NUMBER || process.env.GITHUB_REF?.match(/\/(\d+)\//)?.[1]
   );
-
   if (!pullNumber || isNaN(pullNumber)) {
     console.error("❌  Could not determine PR number. Set PR_NUMBER env var.");
     process.exit(1);
@@ -62,62 +56,86 @@ async function main() {
 
   console.log(`\n🤖  AI PR Reviewer (powered by Anthropic Claude)`);
   console.log(`📦  Model: ${config.model}`);
-  console.log(`🔑  API key: ${config.apiKey ? config.apiKey.slice(0, 14) + "..." : "MISSING ❌"}\n`);
+  console.log(`🔑  Key:   ${config.apiKey ? config.apiKey.slice(0, 14) + "..." : "MISSING ❌"}\n`);
 
-  // Smoke-test before doing real work
   await testModelAccess(config);
 
   const octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
 
-  console.log(`🔍  Fetching diff for PR #${pullNumber} in ${owner}/${repo}`);
+  console.log(`🔍  Fetching PR #${pullNumber} in ${owner}/${repo}\n`);
 
-  const [{ data: pr }, { data: files }] = await Promise.all([
+  // ── Step 1: fetch all PR data + unresolved threads in parallel ─────────────
+  const [{ data: pr }, { data: files }, unresolvedComments] = await Promise.all([
     octokit.pulls.get({ owner, repo, pull_number: pullNumber }),
     octokit.pulls.listFiles({ owner, repo, pull_number: pullNumber, per_page: 100 }),
+    getUnresolvedBotComments(octokit, { owner, repo, pullNumber }),
   ]);
 
   const commitSha = pr.head.sha;
-  console.log(`📄  Found ${files.length} changed files\n`);
+  console.log(`📄  Found ${files.length} changed file(s)\n`);
 
-  // ── Run AI review ──────────────────────────────────────────────────────────
+  // ── Step 2: delete old summary BEFORE running the AI (runs early) ──────────
+  await deletePreviousSummary(octokit, { owner, repo, pullNumber });
+
+  // ── Step 3: run AI review ──────────────────────────────────────────────────
   const results = await reviewFiles(files, config);
 
-  // ── Post inline comments ───────────────────────────────────────────────────
-  let totalErrors = 0;
+  // ── Step 4: post inline comments with deduplication ───────────────────────
+  const postedThisRun = new Set();
+  let totalErrors   = 0;
   let totalWarnings = 0;
+  let skippedOld    = 0;
+  let skippedDup    = 0;
   const allComments = [];
 
   for (const { filename, comments } of results) {
     for (const comment of comments) {
-      if (comment.severity === "error") totalErrors++;
+      if (comment.severity === "error")   totalErrors++;
       if (comment.severity === "warning") totalWarnings++;
+
+      const fingerprint = `${filename}:${comment.line}:${comment.skill}`;
+
+      if (unresolvedComments.has(fingerprint)) {
+        console.log(`   ⏭️  Unresolved (skip): ${fingerprint}`);
+        skippedOld++;
+        continue;
+      }
+      if (postedThisRun.has(fingerprint)) {
+        console.log(`   ⏭️  Duplicate in run (skip): ${fingerprint}`);
+        skippedDup++;
+        continue;
+      }
 
       const emoji = { error: "🔴", warning: "🟡", info: "🔵" }[comment.severity] ?? "⚪";
       try {
         await octokit.pulls.createReviewComment({
-          owner, repo, pull_number: pullNumber,
+          owner, repo,
+          pull_number: pullNumber,
           body: `${emoji} **[${comment.skill.toUpperCase()}]** ${comment.body}`,
           path: filename,
           line: comment.line,
           commit_id: commitSha,
         });
+        postedThisRun.add(fingerprint);
         allComments.push({ filename, ...comment });
-      } catch {
-        // Line may no longer exist in the diff — skip silently
+      } catch (err) {
+        console.warn(`   ⚠️  Could not post on ${filename}:${comment.line} — ${err.message}`);
       }
     }
   }
 
-  // ── Post summary comment ───────────────────────────────────────────────────
+  // ── Step 5: post fresh summary ─────────────────────────────────────────────
   const summary = buildSummary(results, totalErrors, totalWarnings, config);
   await octokit.issues.createComment({
     owner, repo, issue_number: pullNumber, body: summary,
   });
 
   console.log(`\n✅  Review complete`);
-  console.log(`   🔴 Errors:   ${totalErrors}`);
-  console.log(`   🟡 Warnings: ${totalWarnings}`);
-  console.log(`   💬 Comments: ${allComments.length}`);
+  console.log(`   🔴 Errors:                     ${totalErrors}`);
+  console.log(`   🟡 Warnings:                   ${totalWarnings}`);
+  console.log(`   💬 New comments posted:        ${allComments.length}`);
+  console.log(`   ⏭️  Skipped (still open):       ${skippedOld}`);
+  console.log(`   ⏭️  Skipped (dup in this run):  ${skippedDup}`);
 
   if (config.failOnError && totalErrors > 0) {
     console.log(`\n❌  Failing CI: ${totalErrors} error(s) found`);

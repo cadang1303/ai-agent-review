@@ -11,20 +11,17 @@ import { chunkPatch } from "./utils/chunker.js";
 import { loadConfig } from "./utils/config.js";
 
 export async function reviewFiles(files, options = {}) {
-  // Accept a pre-resolved config (from cli.js) or resolve from env + defaults
   const config = options.apiKey ? options : await loadConfig(options);
 
   if (!config.apiKey) {
     throw new Error(
       "No ANTHROPIC_API_KEY found.\n" +
       "→ Get your key at: console.anthropic.com\n" +
-      "→ Add it as a GitHub Actions secret named ANTHROPIC_API_KEY\n" +
-      "→ Add to workflow env: ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}"
+      "→ Add it as a GitHub Actions secret named ANTHROPIC_API_KEY"
     );
   }
 
   const client = new Anthropic({ apiKey: config.apiKey });
-
   const allResults = [];
 
   for (const file of files) {
@@ -49,8 +46,8 @@ export async function reviewFiles(files, options = {}) {
         });
       } catch (err) {
         console.error(`  ⚠️  API call failed for ${file.filename}: ${err.message}`);
-        if (err.status)  console.error(`     Status: ${err.status}`);
-        if (err.error)   console.error(`     Detail: ${JSON.stringify(err.error, null, 2)}`);
+        if (err.status) console.error(`     Status: ${err.status}`);
+        if (err.error)  console.error(`     Detail: ${JSON.stringify(err.error, null, 2)}`);
         continue;
       }
 

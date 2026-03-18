@@ -62,7 +62,7 @@ function loadSkill(skillName) {
 /**
  * Lists all available skill names from the built-in skills directory.
  */
-export async function listAvailableSkills() {
+export function listAvailableSkills() {
   const { readdirSync } = await import("fs");
   return readdirSync(BUILTIN_SKILLS_DIR)
     .filter(f => f.endsWith(".md"))
