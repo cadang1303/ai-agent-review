@@ -1,12 +1,15 @@
 /**
- * prompt.js — loads skill instructions from .md files at runtime.
+ * prompt.js — loads skill instructions from SKILL.md files at runtime.
+ *
+ * Follows the Agent Skills open format (agentskills.io):
+ *   Each skill is a directory containing a SKILL.md file with YAML frontmatter.
  *
  * Skill resolution order (first match wins):
- *   1. <project-root>/.ai-reviewer-skills/<skill>.md  (per-project override)
- *   2. <reviewer-root>/skills/<skill>.md              (built-in default)
+ *   1. <project-root>/.ai-reviewer-skills/<skill>/SKILL.md  (per-project override)
+ *   2. <reviewer-root>/skills/<skill>/SKILL.md               (built-in default)
  *
- * This means any project can override any skill by dropping a .md file
- * into their own .ai-reviewer-skills/ folder — no code changes needed.
+ * The frontmatter is stripped before sending to the model — only the
+ * Markdown body (the actual instructions) is included in the prompt.
  */
 
 import { readFileSync, existsSync } from "fs";
@@ -15,13 +18,9 @@ import { fileURLToPath } from "url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-// Built-in skills live two levels up from src/utils/
 const BUILTIN_SKILLS_DIR = resolve(__dirname, "../../skills");
-
-// Per-project overrides live relative to the process cwd (the project root)
 const PROJECT_SKILLS_DIR = resolve(process.cwd(), ".ai-reviewer-skills");
 
-// Map file extensions to language display names
 const EXT_LANGUAGE_MAP = {
   ".js":   "JavaScript",
   ".jsx":  "JavaScript (React)",
@@ -39,45 +38,51 @@ const EXT_LANGUAGE_MAP = {
 };
 
 /**
- * Loads a single skill's markdown content.
- * Returns null if the skill file doesn't exist in either location.
+ * Strips YAML frontmatter from a SKILL.md file.
+ * Returns only the Markdown body (the instructions).
+ */
+function stripFrontmatter(content) {
+  const trimmed = content.trim();
+  if (!trimmed.startsWith("---")) return trimmed;
+  const end = trimmed.indexOf("\n---", 3);
+  if (end === -1) return trimmed;
+  return trimmed.slice(end + 4).trim();
+}
+
+/**
+ * Loads a single skill's instructions from its SKILL.md file.
+ * Checks project override first, then built-in.
+ * Returns null if not found in either location.
  */
 function loadSkill(skillName) {
-  // 1. Check for per-project override first
-  const projectPath = resolve(PROJECT_SKILLS_DIR, `${skillName}.md`);
+  // 1. Per-project override: .ai-reviewer-skills/<skill>/SKILL.md
+  const projectPath = resolve(PROJECT_SKILLS_DIR, skillName, "SKILL.md");
   if (existsSync(projectPath)) {
-    return readFileSync(projectPath, "utf-8").trim();
+    const raw = readFileSync(projectPath, "utf-8");
+    console.log(`   Using project skill: ${skillName}`);
+    return stripFrontmatter(raw);
   }
 
-  // 2. Fall back to built-in skill
-  const builtinPath = resolve(BUILTIN_SKILLS_DIR, `${skillName}.md`);
+  // 2. Built-in: skills/<skill>/SKILL.md
+  const builtinPath = resolve(BUILTIN_SKILLS_DIR, skillName, "SKILL.md");
   if (existsSync(builtinPath)) {
-    return readFileSync(builtinPath, "utf-8").trim();
+    return stripFrontmatter(readFileSync(builtinPath, "utf-8"));
   }
 
-  console.warn(`⚠️  Skill not found: "${skillName}" (checked ${projectPath} and ${builtinPath})`);
+  console.warn(`⚠️  Skill not found: "${skillName}"`);
+  console.warn(`    Checked: ${projectPath}`);
+  console.warn(`    Checked: ${builtinPath}`);
   return null;
 }
 
 /**
- * Lists all available skill names from the built-in skills directory.
- */
-export function listAvailableSkills() {
-  const { readdirSync } = await import("fs");
-  return readdirSync(BUILTIN_SKILLS_DIR)
-    .filter(f => f.endsWith(".md"))
-    .map(f => f.replace(".md", ""));
-}
-
-/**
- * Builds the full review prompt for a given file diff.
- * Loads each enabled skill from its .md file and concatenates them.
+ * Builds the full review prompt for a file diff.
+ * Loads each enabled skill's SKILL.md body and concatenates them.
  */
 export function buildReviewPrompt(filename, patch, enabledSkills) {
   const ext = "." + filename.split(".").pop().toLowerCase();
   const language = EXT_LANGUAGE_MAP[ext] ?? "unknown language";
 
-  // Load and concatenate all enabled skill instructions
   const skillInstructions = enabledSkills
     .map(name => loadSkill(name))
     .filter(Boolean)
