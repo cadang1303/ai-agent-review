@@ -2,9 +2,10 @@
 /**
  * CLI entry point — runs inside GitHub Actions.
  *
- * Features:
- *  - Deletes the previous summary comment before posting a fresh one
- *  - Skips re-posting inline comments that were already flagged in a prior run
+ * Deduplication logic:
+ *   - If a bot comment exists and is UNRESOLVED → skip re-posting (already flagged)
+ *   - If a bot comment was RESOLVED by the developer → re-post if issue still in code
+ *   - If a bot comment is OUTDATED (line no longer in diff) → re-post on new line
  */
 
 import OpenAI from "openai";
@@ -14,7 +15,7 @@ import { loadConfig, GITHUB_MODELS_ENDPOINT } from "./utils/config.js";
 import { buildSummary } from "./utils/summary.js";
 import {
   deletePreviousSummary,
-  getExistingInlineComments,
+  getUnresolvedBotComments,
 } from "./utils/github.js";
 
 async function testModelAccess(config) {
@@ -89,17 +90,19 @@ async function main() {
 
   console.log(`🔍  Fetching PR #${pullNumber} in ${owner}/${repo}\n`);
 
-  // Fetch PR data, changed files, and existing inline comments in parallel
-  const [{ data: pr }, { data: files }, existingComments] = await Promise.all([
-    octokit.pulls.get({ owner, repo, pull_number: pullNumber }),
-    octokit.pulls.listFiles({
-      owner,
-      repo,
-      pull_number: pullNumber,
-      per_page: 100,
-    }),
-    getExistingInlineComments(octokit, { owner, repo, pullNumber }),
-  ]);
+  // Fetch PR metadata, changed files, and unresolved bot threads in parallel
+  const [{ data: pr }, { data: files }, unresolvedComments] = await Promise.all(
+    [
+      octokit.pulls.get({ owner, repo, pull_number: pullNumber }),
+      octokit.pulls.listFiles({
+        owner,
+        repo,
+        pull_number: pullNumber,
+        per_page: 100,
+      }),
+      getUnresolvedBotComments(octokit, { owner, repo, pullNumber }),
+    ]
+  );
 
   const commitSha = pr.head.sha;
   console.log(`📄  Found ${files.length} changed file(s)\n`);
@@ -107,10 +110,11 @@ async function main() {
   // ── Run AI review ──────────────────────────────────────────────────────────
   const results = await reviewFiles(files, config);
 
-  // ── Post inline comments (skip already-flagged issues) ─────────────────────
+  // ── Post inline comments ───────────────────────────────────────────────────
   let totalErrors = 0;
   let totalWarnings = 0;
   let skipped = 0;
+  let reposted = 0;
   const allComments = [];
 
   for (const { filename, comments } of results) {
@@ -118,18 +122,19 @@ async function main() {
       if (comment.severity === "error") totalErrors++;
       if (comment.severity === "warning") totalWarnings++;
 
-      // Build the same fingerprint format used in getExistingInlineComments
       const fingerprint = `${filename}:${comment.line}:${comment.skill}`;
 
-      if (existingComments.has(fingerprint)) {
-        // This exact issue on this exact line was already flagged — skip it
-        console.log(`   ⏭️  Already flagged, skipping: ${fingerprint}`);
+      if (unresolvedComments.has(fingerprint)) {
+        // Thread is still open and unresolved — don't spam the same comment again
         skipped++;
         continue;
       }
 
+      // Either a new issue, or one the developer resolved (and the bug is back)
+      const wasResolved = !unresolvedComments.has(fingerprint);
       const emoji =
         { error: "🔴", warning: "🟡", info: "🔵" }[comment.severity] ?? "⚪";
+
       try {
         await octokit.pulls.createReviewComment({
           owner,
@@ -141,13 +146,14 @@ async function main() {
           commit_id: commitSha,
         });
         allComments.push({ filename, ...comment });
+        if (wasResolved) reposted++;
       } catch {
-        // Line may no longer exist in the diff — skip silently
+        // Line no longer in diff — skip silently
       }
     }
   }
 
-  // ── Delete previous summary, then post fresh one ───────────────────────────
+  // ── Delete old summary → post fresh one ───────────────────────────────────
   await deletePreviousSummary(octokit, { owner, repo, pullNumber });
 
   const summary = buildSummary(results, totalErrors, totalWarnings, config);
@@ -159,10 +165,11 @@ async function main() {
   });
 
   console.log(`\n✅  Review complete`);
-  console.log(`   🔴 Errors:      ${totalErrors}`);
-  console.log(`   🟡 Warnings:    ${totalWarnings}`);
-  console.log(`   💬 New comments: ${allComments.length}`);
-  console.log(`   ⏭️  Skipped (already flagged): ${skipped}`);
+  console.log(`   🔴 Errors:                  ${totalErrors}`);
+  console.log(`   🟡 Warnings:                ${totalWarnings}`);
+  console.log(`   💬 New comments posted:     ${allComments.length}`);
+  console.log(`   ⏭️  Skipped (still open):    ${skipped}`);
+  console.log(`   🔁 Re-posted (was resolved): ${reposted}`);
 
   if (config.failOnError && totalErrors > 0) {
     console.log(`\n❌  Failing CI: ${totalErrors} error(s) found`);
