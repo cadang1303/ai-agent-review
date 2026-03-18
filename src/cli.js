@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 /**
  * CLI entry point — runs inside GitHub Actions.
- * Uses GH_MODELS_TOKEN for GitHub Models API calls.
- * Uses GITHUB_TOKEN (auto-provided) for posting PR comments.
+ *
+ * Features:
+ *  - Deletes the previous summary comment before posting a fresh one
+ *  - Skips re-posting inline comments that were already flagged in a prior run
  */
 
 import OpenAI from "openai";
@@ -10,6 +12,10 @@ import { Octokit } from "@octokit/rest";
 import { reviewFiles } from "./index.js";
 import { loadConfig, GITHUB_MODELS_ENDPOINT } from "./utils/config.js";
 import { buildSummary } from "./utils/summary.js";
+import {
+  deletePreviousSummary,
+  getExistingInlineComments,
+} from "./utils/github.js";
 
 async function testModelAccess(config) {
   console.log(`🧪  Testing model access: ${config.model}`);
@@ -32,18 +38,20 @@ async function testModelAccess(config) {
     console.error(`    Endpoint: ${GITHUB_MODELS_ENDPOINT}`);
     console.error(`    Error:    ${err.message}`);
     if (err.status) console.error(`    Status:   ${err.status}`);
-    if (err.error)  console.error(`    Detail:   ${JSON.stringify(err.error, null, 2)}`);
+    if (err.error)
+      console.error(`    Detail:   ${JSON.stringify(err.error, null, 2)}`);
     process.exit(1);
   }
 }
 
 async function main() {
-  // ── Validate required env vars ─────────────────────────────────────────────
+  // ── Validate env vars ──────────────────────────────────────────────────────
   if (!process.env.GH_MODELS_TOKEN && !process.env.GITHUB_TOKEN) {
     console.error("❌  Missing GH_MODELS_TOKEN.");
-    console.error("    GitHub Models requires a PAT with models:read scope.");
-    console.error("    → Create one at: github.com/settings/tokens");
-    console.error("    → Add it as repo secret: GH_MODELS_TOKEN");
+    console.error(
+      "    → Create a PAT at: github.com/settings/tokens (Models → Read)"
+    );
+    console.error("    → Add as repo secret: GH_MODELS_TOKEN");
     process.exit(1);
   }
   if (!process.env.GITHUB_TOKEN) {
@@ -56,7 +64,6 @@ async function main() {
   }
 
   const config = await loadConfig();
-
   const [owner, repo] = process.env.GITHUB_REPOSITORY.split("/");
   const pullNumber = parseInt(
     process.env.PR_NUMBER || process.env.GITHUB_REF?.match(/\/(\d+)\//)?.[1]
@@ -70,29 +77,40 @@ async function main() {
   console.log(`\n🤖  AI PR Reviewer (powered by GitHub Models — free)`);
   console.log(`📦  Model:    ${config.model}`);
   console.log(`🌐  Endpoint: ${GITHUB_MODELS_ENDPOINT}`);
-  console.log(`🔑  Token:    ${config.apiKey ? config.apiKey.slice(0, 12) + "..." : "MISSING ❌"}\n`);
+  console.log(
+    `🔑  Token:    ${
+      config.apiKey ? config.apiKey.slice(0, 12) + "..." : "MISSING ❌"
+    }\n`
+  );
 
-  // Smoke-test model before doing real work
   await testModelAccess(config);
 
   const octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
 
-  console.log(`🔍  Fetching diff for PR #${pullNumber} in ${owner}/${repo}`);
+  console.log(`🔍  Fetching PR #${pullNumber} in ${owner}/${repo}\n`);
 
-  const [{ data: pr }, { data: files }] = await Promise.all([
+  // Fetch PR data, changed files, and existing inline comments in parallel
+  const [{ data: pr }, { data: files }, existingComments] = await Promise.all([
     octokit.pulls.get({ owner, repo, pull_number: pullNumber }),
-    octokit.pulls.listFiles({ owner, repo, pull_number: pullNumber, per_page: 100 }),
+    octokit.pulls.listFiles({
+      owner,
+      repo,
+      pull_number: pullNumber,
+      per_page: 100,
+    }),
+    getExistingInlineComments(octokit, { owner, repo, pullNumber }),
   ]);
 
   const commitSha = pr.head.sha;
-  console.log(`📄  Found ${files.length} changed files\n`);
+  console.log(`📄  Found ${files.length} changed file(s)\n`);
 
   // ── Run AI review ──────────────────────────────────────────────────────────
   const results = await reviewFiles(files, config);
 
-  // ── Post inline comments ───────────────────────────────────────────────────
+  // ── Post inline comments (skip already-flagged issues) ─────────────────────
   let totalErrors = 0;
   let totalWarnings = 0;
+  let skipped = 0;
   const allComments = [];
 
   for (const { filename, comments } of results) {
@@ -100,10 +118,23 @@ async function main() {
       if (comment.severity === "error") totalErrors++;
       if (comment.severity === "warning") totalWarnings++;
 
-      const emoji = { error: "🔴", warning: "🟡", info: "🔵" }[comment.severity] ?? "⚪";
+      // Build the same fingerprint format used in getExistingInlineComments
+      const fingerprint = `${filename}:${comment.line}:${comment.skill}`;
+
+      if (existingComments.has(fingerprint)) {
+        // This exact issue on this exact line was already flagged — skip it
+        console.log(`   ⏭️  Already flagged, skipping: ${fingerprint}`);
+        skipped++;
+        continue;
+      }
+
+      const emoji =
+        { error: "🔴", warning: "🟡", info: "🔵" }[comment.severity] ?? "⚪";
       try {
         await octokit.pulls.createReviewComment({
-          owner, repo, pull_number: pullNumber,
+          owner,
+          repo,
+          pull_number: pullNumber,
           body: `${emoji} **[${comment.skill.toUpperCase()}]** ${comment.body}`,
           path: filename,
           line: comment.line,
@@ -116,16 +147,22 @@ async function main() {
     }
   }
 
-  // ── Post summary comment ───────────────────────────────────────────────────
+  // ── Delete previous summary, then post fresh one ───────────────────────────
+  await deletePreviousSummary(octokit, { owner, repo, pullNumber });
+
   const summary = buildSummary(results, totalErrors, totalWarnings, config);
   await octokit.issues.createComment({
-    owner, repo, issue_number: pullNumber, body: summary,
+    owner,
+    repo,
+    issue_number: pullNumber,
+    body: summary,
   });
 
   console.log(`\n✅  Review complete`);
-  console.log(`   🔴 Errors:   ${totalErrors}`);
-  console.log(`   🟡 Warnings: ${totalWarnings}`);
-  console.log(`   💬 Comments: ${allComments.length}`);
+  console.log(`   🔴 Errors:      ${totalErrors}`);
+  console.log(`   🟡 Warnings:    ${totalWarnings}`);
+  console.log(`   💬 New comments: ${allComments.length}`);
+  console.log(`   ⏭️  Skipped (already flagged): ${skipped}`);
 
   if (config.failOnError && totalErrors > 0) {
     console.log(`\n❌  Failing CI: ${totalErrors} error(s) found`);
