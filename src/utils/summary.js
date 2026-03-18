@@ -34,26 +34,20 @@ export function buildSummary(results, totalErrors, totalWarnings, config) {
   const fileRows = results
     .filter((r) => r.comments.length > 0)
     .map((r) => {
-      const errors = r.comments.filter((c) => c.severity === "error").length;
-      const warnings = r.comments.filter(
-        (c) => c.severity === "warning"
-      ).length;
-      const infos = r.comments.filter((c) => c.severity === "info").length;
+      const errors   = r.comments.filter((c) => c.severity === "error").length;
+      const warnings = r.comments.filter((c) => c.severity === "warning").length;
+      const infos    = r.comments.filter((c) => c.severity === "info").length;
       const badges = [
-        errors ? `🔴 ${errors}` : "",
+        errors   ? `🔴 ${errors}`   : "",
         warnings ? `🟡 ${warnings}` : "",
-        infos ? `🔵 ${infos}` : "",
-      ]
-        .filter(Boolean)
-        .join("  ");
+        infos    ? `🔵 ${infos}`    : "",
+      ].filter(Boolean).join("  ");
       return `| \`${r.filename}\` | ${badges} |`;
     });
 
   const filesSection =
     fileRows.length > 0
-      ? `\n### Files reviewed\n| File | Issues |\n|---|---|\n${fileRows.join(
-          "\n"
-        )}\n`
+      ? `\n### Files reviewed\n| File | Issues |\n|---|---|\n${fileRows.join("\n")}\n`
       : "";
 
   const skillsUsed = config.skills.join(", ");

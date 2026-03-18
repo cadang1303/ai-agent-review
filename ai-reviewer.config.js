@@ -1,6 +1,5 @@
 /**
  * ai-reviewer.config.js — optional per-project config
- * Drop this in your project root to override defaults.
  */
 export default {
   // GitHub Models — model names MUST include publisher prefix
@@ -11,17 +10,15 @@ export default {
   // "microsoft/Phi-4-mini-instruct"     → lightweight, very fast
   model: "openai/gpt-4o-mini",
 
-  // Built-in skills: convention | lint | security | logic | tests | performance | types
-  // Add custom skills by creating .md files in .ai-reviewer-skills/
+  // Built-in skills (Agent Skills format): convention | lint | security | logic | tests | performance | types | unit-test
+  // Add custom skills by creating <skill-name>/SKILL.md in .ai-reviewer-skills/
   skills: ["convention", "lint", "security", "logic", "tests"],
 
   failOnError: true,
-
   ignorePatterns: [
     "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
     ".min.js", ".min.css", "dist/", "build/", "__snapshots__/",
     ".svg", ".png", ".jpg", ".ico",
   ],
-
   maxTokensPerChunk: 3000,
 };

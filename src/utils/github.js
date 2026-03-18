@@ -13,10 +13,7 @@ import { SUMMARY_MARKER } from "./summary.js";
  * Uses GraphQL to get full (untruncated) comment bodies and handles any
  * number of comments efficiently in one query.
  */
-export async function deletePreviousSummary(
-  octokit,
-  { owner, repo, pullNumber }
-) {
+export async function deletePreviousSummary(octokit, { owner, repo, pullNumber }) {
   console.log("🧹  Scanning for previous summary comments (GraphQL)...");
 
   // GraphQL returns full body text — REST API truncates long comment bodies
@@ -44,10 +41,7 @@ export async function deletePreviousSummary(
     let response;
     try {
       response = await octokit.graphql(query, {
-        owner,
-        repo,
-        number: pullNumber,
-        cursor,
+        owner, repo, number: pullNumber, cursor,
       });
     } catch (err) {
       console.warn(`⚠️  GraphQL comment fetch failed: ${err.message}`);
@@ -61,23 +55,18 @@ export async function deletePreviousSummary(
 
     for (const c of comments.nodes) {
       const hasMarker = c.body?.includes(SUMMARY_MARKER);
-      console.log(
-        `   #${c.databaseId} author="${c.author?.login}" hasMarker=${hasMarker}`
-      );
+      console.log(`   #${c.databaseId} author="${c.author?.login}" hasMarker=${hasMarker}`);
 
       if (hasMarker) {
         try {
           await octokit.issues.deleteComment({
-            owner,
-            repo,
+            owner, repo,
             comment_id: c.databaseId,
           });
           console.log(`   ✅ Deleted summary #${c.databaseId}`);
           deleted++;
         } catch (err) {
-          console.warn(
-            `   ⚠️  Could not delete #${c.databaseId}: ${err.message}`
-          );
+          console.warn(`   ⚠️  Could not delete #${c.databaseId}: ${err.message}`);
         }
       }
     }
@@ -86,11 +75,7 @@ export async function deletePreviousSummary(
     cursor = comments.pageInfo.endCursor;
   }
 
-  console.log(
-    deleted === 0
-      ? "   No previous summary found"
-      : `   Removed ${deleted} old summary comment(s)`
-  );
+  console.log(deleted === 0 ? "   No previous summary found" : `   Removed ${deleted} old summary comment(s)`);
 }
 
 // REST fallback in case GraphQL fails
@@ -98,11 +83,7 @@ async function deletePreviousSummaryREST(octokit, { owner, repo, pullNumber }) {
   let page = 1;
   while (true) {
     const { data: comments } = await octokit.issues.listComments({
-      owner,
-      repo,
-      issue_number: pullNumber,
-      per_page: 100,
-      page,
+      owner, repo, issue_number: pullNumber, per_page: 100, page,
     });
     if (comments.length === 0) break;
     for (const c of comments) {
@@ -157,10 +138,7 @@ const REVIEW_THREADS_QUERY = `
  * Handles null lines (multi-line comments) by falling back to originalLine
  * and then originalStartLine so fingerprints are never "path:null:skill".
  */
-export async function getUnresolvedBotComments(
-  octokit,
-  { owner, repo, pullNumber }
-) {
+export async function getUnresolvedBotComments(octokit, { owner, repo, pullNumber }) {
   const unresolved = new Set();
   let cursor = null;
 
@@ -170,10 +148,7 @@ export async function getUnresolvedBotComments(
     let response;
     try {
       response = await octokit.graphql(REVIEW_THREADS_QUERY, {
-        owner,
-        repo,
-        number: pullNumber,
-        cursor,
+        owner, repo, number: pullNumber, cursor,
       });
     } catch (err) {
       console.warn(`⚠️  GraphQL thread fetch failed: ${err.message}`);
@@ -200,8 +175,9 @@ export async function getUnresolvedBotComments(
       const skill = skillMatch[1].toLowerCase();
 
       // Resolve line number — multi-line comments can have null `line`
-      const line =
-        comment.line ?? comment.originalLine ?? comment.originalStartLine;
+      const line = comment.line
+        ?? comment.originalLine
+        ?? comment.originalStartLine;
 
       if (!line) continue; // genuinely no line info — skip
 
