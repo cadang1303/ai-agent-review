@@ -1,27 +1,34 @@
 # ai-pr-reviewer
 
-AI-powered pull request code reviewer using **Anthropic Claude**. Skills are plain **Markdown files** — add, edit, or override any skill without touching JavaScript.
+AI-powered pull request code reviewer using **GitHub Models (free)**. Skills are plain **Markdown files** — add, edit, or override any skill without touching JavaScript.
+
+**Completely free** — uses a GitHub PAT with `models:read` scope. No credit card, no billing.
 
 ---
 
 ## Quick start
 
-### 1. Add your Anthropic API key
+### 1. Create a GitHub PAT with Models access
 
-In your GitHub repo: **Settings → Secrets → Actions → New repository secret**
-```
-Name:  ANTHROPIC_API_KEY
-Value: sk-ant-...
-```
-Get your key at [console.anthropic.com](https://console.anthropic.com).
+1. Go to **[github.com/settings/tokens](https://github.com/settings/tokens)** → **Generate new token (fine-grained)**
+2. Under **Permissions** → find **Models** → set to **Read**
+3. Copy the token (`github_pat_...`)
 
-### 2. Run setup
+### 2. Add it as a repo secret
+
+In your GitHub repo: **Settings → Secrets and variables → Actions → New repository secret**
+```
+Name:  GH_MODELS_TOKEN
+Value: github_pat_...
+```
+
+### 3. Run setup
 
 ```bash
 bash /path/to/ai-pr-reviewer/setup.sh
 ```
 
-### 3. Commit and push
+### 4. Commit and push
 
 ```bash
 git add .ai-reviewer .ai-reviewer-skills .github/workflows/ai-review.yml ai-reviewer.config.js
@@ -44,18 +51,19 @@ your-project/
 │   │   ├── logic.md
 │   │   ├── tests.md
 │   │   ├── performance.md
-│   │   └── types.md
+│   │   ├── types.md
+│   │   └── SKILL_TEMPLATE.md
 │   └── src/
 │       ├── cli.js
 │       ├── index.js
 │       └── utils/
-│           ├── prompt.js          ← loads skills from .md files
+│           ├── prompt.js          ← loads skills from .md files at runtime
 │           ├── config.js
 │           ├── parser.js
 │           ├── chunker.js
 │           └── summary.js
 ├── .ai-reviewer-skills/           ← your custom skill overrides
-│   └── SKILL_TEMPLATE.md          ← copy this to create a new skill
+│   └── SKILL_TEMPLATE.md
 ├── .github/workflows/
 │   └── ai-review.yml
 └── ai-reviewer.config.js
@@ -65,8 +73,7 @@ your-project/
 
 ## How skills work
 
-Each skill is a plain `.md` file describing what the AI should look for.
-Skill resolution order — **first match wins**:
+Each skill is a plain `.md` file. Resolution order — **first match wins**:
 
 ```
 .ai-reviewer-skills/<skill>.md    ← per-project override (your repo)
@@ -74,38 +81,42 @@ Skill resolution order — **first match wins**:
 ```
 
 ### Edit a built-in skill
-
 ```bash
-# Just edit the file directly
 nano .ai-reviewer/skills/security.md
 ```
 
 ### Override a skill for just this project
-
 ```bash
-# Copy to override folder and edit
 cp .ai-reviewer/skills/security.md .ai-reviewer-skills/security.md
 nano .ai-reviewer-skills/security.md
 ```
 
-### Add a completely new skill
-
+### Add a completely custom skill
 ```bash
-# 1. Create the skill file
 cp .ai-reviewer-skills/SKILL_TEMPLATE.md .ai-reviewer-skills/api-design.md
 nano .ai-reviewer-skills/api-design.md
-
-# 2. Add it to your config
-# ai-reviewer.config.js → skills: ["convention", "lint", "api-design"]
+# Then add "api-design" to skills: [...] in ai-reviewer.config.js
 ```
 
-That's it — no JavaScript to change, no redeploy.
+---
+
+## Free models
+
+| Model | Set in config |
+|---|---|
+| GPT-4o mini *(default)* | `"openai/gpt-4o-mini"` |
+| GPT-4o | `"openai/gpt-4o"` |
+| Llama 3.3 70B | `"meta/Meta-Llama-3.3-70B-Instruct"` |
+| DeepSeek R1 | `"deepseek/DeepSeek-R1"` |
+| Phi-4 mini | `"microsoft/Phi-4-mini-instruct"` |
+
+Browse all at [github.com/marketplace/models](https://github.com/marketplace/models).
 
 ---
 
 ## Built-in skills
 
-| Skill file | What it checks |
+| Skill | What it checks |
 |---|---|
 | `convention.md` | Naming, formatting, magic numbers, commented code |
 | `lint.md` | Unused imports/vars, unreachable code, console.logs |
@@ -117,42 +128,20 @@ That's it — no JavaScript to change, no redeploy.
 
 ---
 
-## Config
-
-```js
-// ai-reviewer.config.js
-export default {
-  model: "claude-haiku-4-5-20251001",  // cheapest — swap to claude-sonnet-4-6 for production
-  skills: ["convention", "lint", "security", "logic", "tests"],
-  failOnError: true,
-  ignorePatterns: ["dist/", "*.min.js"],
-};
-```
-
-## Models
-
-| Model | Best for |
-|---|---|
-| `claude-haiku-4-5-20251001` | Testing, high-volume repos (cheapest) |
-| `claude-sonnet-4-6` | Production (recommended) |
-| `claude-opus-4-6` | Critical / security-sensitive repos |
-
----
-
 ## Test locally
 
 ```bash
-ANTHROPIC_API_KEY=sk-ant-... node .ai-reviewer/src/test-local.js
+GH_MODELS_TOKEN=github_pat_... node .ai-reviewer/src/test-local.js
 ```
 
 ---
 
 ## Workflow env overrides
 
-| Variable | Default | Description |
+| Variable | Required | Description |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | *(required)* | Your Anthropic API key |
+| `GH_MODELS_TOKEN` | ✅ Yes | PAT with `models:read` scope |
 | `GITHUB_TOKEN` | Auto-set | Used for posting PR comments |
-| `REVIEWER_MODEL` | `claude-haiku-4-5-20251001` | Override the model |
-| `REVIEWER_SKILLS` | all in config | Comma-separated skill list |
-| `REVIEWER_FAIL_ON_ERROR` | `true` | Set `"false"` to warn without blocking |
+| `REVIEWER_MODEL` | Optional | Override the model |
+| `REVIEWER_SKILLS` | Optional | Comma-separated skill list |
+| `REVIEWER_FAIL_ON_ERROR` | Optional | Set `"false"` to warn without blocking |

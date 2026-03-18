@@ -10,9 +10,9 @@ jobs:
     runs-on: ubuntu-latest
 
     permissions:
-      pull-requests: write
+      pull-requests: write   # post and delete review comments
+      issues: write          # post and DELETE issue comments (summary)
       contents: read
-      models: read
 
     steps:
       - name: Checkout
@@ -26,13 +26,13 @@ jobs:
           node-version: "20"
 
       - name: Install reviewer dependencies
-        # working-directory: .ai-reviewer
+        working-directory: .ai-reviewer
         run: npm install
 
       - name: Run AI Review
-        # working-directory: .ai-reviewer
+        working-directory: .ai-reviewer
         env:
-          # ── Required: PAT with models:read scope ───────────────────────────
+          # Required: PAT with models:read scope
           # 1. Go to: github.com/settings/tokens → Generate new token (fine-grained)
           # 2. Permissions → Models → Read
           # 3. Add as repo secret: Settings → Secrets → Actions → GH_MODELS_TOKEN
@@ -43,12 +43,10 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
 
-          # ── Optional model overrides ────────────────────────────────────────
           # REVIEWER_MODEL: openai/gpt-4o-mini                  # default — free, fast
           # REVIEWER_MODEL: openai/gpt-4o                       # more powerful, still free
-          # REVIEWER_MODEL: meta/Meta-Llama-3.3-70B-Instruct    # open-source alternative
+          # REVIEWER_MODEL: meta/Meta-Llama-3.3-70B-Instruct    # open-source
           # REVIEWER_MODEL: deepseek/DeepSeek-R1                # strong reasoning
-          # REVIEWER_MODEL: microsoft/Phi-4-mini-instruct       # lightweight + fast
           # REVIEWER_SKILLS: convention,lint,security
           # REVIEWER_FAIL_ON_ERROR: "false"
         run: node src/cli.js

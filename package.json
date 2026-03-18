@@ -1,7 +1,7 @@
 {
   "name": "ai-pr-reviewer",
-  "version": "4.0.0",
-  "description": "AI-powered pull request code reviewer using GitHub Models (free) — skill-file architecture",
+  "version": "6.0.0",
+  "description": "AI-powered pull request code reviewer using GitHub Models (free) — Agent Skills format",
   "type": "module",
   "main": "src/index.js",
   "bin": { "ai-pr-reviewer": "src/cli.js" },
@@ -9,7 +9,7 @@
     "review": "node src/cli.js",
     "test":   "node src/test-local.js"
   },
-  "keywords": ["github-actions", "code-review", "ai", "github-models", "pull-request", "free"],
+  "keywords": ["github-actions", "code-review", "ai", "github-models", "pull-request", "free", "agent-skills"],
   "license": "MIT",
   "dependencies": {
     "openai": "^4.0.0",

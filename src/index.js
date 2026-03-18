@@ -11,7 +11,6 @@ import { chunkPatch } from "./utils/chunker.js";
 import { loadConfig, GITHUB_MODELS_ENDPOINT } from "./utils/config.js";
 
 export async function reviewFiles(files, options = {}) {
-  // Accept a pre-resolved config (from cli.js) or resolve from env + defaults
   const config = options.apiKey ? options : await loadConfig(options);
 
   if (!config.apiKey) {
@@ -26,9 +25,7 @@ export async function reviewFiles(files, options = {}) {
   const client = new OpenAI({
     baseURL: GITHUB_MODELS_ENDPOINT,
     apiKey: config.apiKey,
-    defaultHeaders: {
-      "X-GitHub-Api-Version": "2022-11-28",
-    },
+    defaultHeaders: { "X-GitHub-Api-Version": "2022-11-28" },
   });
 
   const allResults = [];
@@ -62,7 +59,6 @@ export async function reviewFiles(files, options = {}) {
         continue;
       }
 
-      // Guard: log full response if shape is unexpected
       if (!response?.choices?.length) {
         console.warn(`  ⚠️  Unexpected response shape for ${file.filename}:`);
         console.warn("     ", JSON.stringify(response, null, 2));

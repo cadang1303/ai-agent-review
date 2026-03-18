@@ -1,11 +1,10 @@
 /**
- * test-local.js — test the reviewer without a real PR
+ * test-local.js — test without a real PR
  *
  * Usage:
  *   GH_MODELS_TOKEN=github_pat_... node src/test-local.js
  *
- * Get a PAT at: github.com/settings/tokens
- * Required permission: Models → Read
+ * Get a PAT at: github.com/settings/tokens — Permission: Models → Read
  */
 
 import { reviewFiles } from "./index.js";
@@ -13,7 +12,7 @@ import { reviewFiles } from "./index.js";
 const MOCK_FILES = [
   {
     filename: "src/auth.js",
-    patch: `@@ -0,0 +1,35 @@
+    patch: `@@ -0,0 +1,30 @@
 +const express = require('express')
 +const db = require('../db')
 +const router = express.Router()
@@ -26,9 +25,7 @@ const MOCK_FILES = [
 +  const password = req.body.password
 +  const query = "SELECT * FROM users WHERE username = '" + username + "' AND password = '" + password + "'"
 +  const user = await db.query(query)
-+  if (user) {
-+    res.json({ token: 'logged_in', user: user })
-+  }
++  if (user) { res.json({ token: 'logged_in', user: user }) }
 +})
 +
 +router.get('/users', async (req, res) => {
@@ -37,38 +34,26 @@ const MOCK_FILES = [
 +  res.json(users)
 +})
 +
-+function validateEmail(e) {
-+  return e.includes('@')
-+}
-+
++function validateEmail(e) { return e.includes('@') }
 +module.exports = router`,
   },
   {
     filename: "src/utils/math.js",
-    patch: `@@ -0,0 +1,18 @@
+    patch: `@@ -0,0 +1,15 @@
 +export function average(numbers) {
 +  let sum = 0
-+  for (let i = 0; i <= numbers.length; i++) {
-+    sum += numbers[i]
-+  }
++  for (let i = 0; i <= numbers.length; i++) { sum += numbers[i] }
 +  return sum / numbers.length
 +}
-+
-+export function divide(a, b) {
-+  return a / b
-+}
-+
++export function divide(a, b) { return a / b }
 +export function fetchPrices(ids) {
 +  const prices = []
-+  for (const id of ids) {
-+    const price = fetch('/api/price/' + id)
-+    prices.push(price)
-+  }
++  for (const id of ids) { prices.push(fetch('/api/price/' + id)) }
 +  return prices
 +}`,
   },
   {
-    filename: "package-lock.json", // skipped by ignorePatterns
+    filename: "package-lock.json",
     patch: `@@ -1,3 +1,3 @@\n-  "version": "1.0.0"\n+  "version": "1.0.1"`,
   },
 ];
@@ -76,8 +61,7 @@ const MOCK_FILES = [
 const token = process.env.GH_MODELS_TOKEN || process.env.GITHUB_TOKEN;
 if (!token) {
   console.error("❌  Set GH_MODELS_TOKEN before running.");
-  console.error("   Create a PAT at: github.com/settings/tokens");
-  console.error("   Required permission: Models → Read");
+  console.error("   Create a PAT at: github.com/settings/tokens (Models → Read)");
   process.exit(1);
 }
 
