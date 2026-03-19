@@ -2,6 +2,7 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import { Octokit } from "@octokit/rest";
+import { createHash } from "crypto";
 import { reviewFiles } from "./index.js";
 import { loadConfig } from "./utils/config.js";
 import { buildSummary } from "./utils/summary.js";
@@ -38,6 +39,13 @@ async function listAllFiles(octokit, { owner, repo, pullNumber }) {
 }
 
 async function main() {
+  const nodeMajor = parseInt(process.versions.node.split(".")[0], 10);
+  if (!Number.isFinite(nodeMajor) || nodeMajor < 24) {
+    console.error(`❌  Node.js ${process.versions.node} detected — this project requires Node >= 24.`);
+    console.error("    Tip: GitHub Actions uses Node 24 via actions/setup-node.");
+    process.exit(1);
+  }
+
   if (!process.env.ANTHROPIC_API_KEY) {
     console.error("❌  Missing ANTHROPIC_API_KEY.");
     console.error("    → Get your key at: console.anthropic.com");
@@ -105,15 +113,17 @@ async function main() {
       if (comment.severity === "error")   totalErrors++;
       if (comment.severity === "warning") totalWarnings++;
 
-      const fingerprint = `${filename}:${comment.line}:${comment.skill}`;
+      const bodyHash = createHash("sha1").update(String(comment.body ?? ""), "utf8").digest("hex").slice(0, 10);
+      const fingerprintV1 = `${filename}:${comment.line}:${comment.skill}`;
+      const fingerprintV2 = `${fingerprintV1}:${bodyHash}`;
 
-      if (unresolvedComments.has(fingerprint)) {
-        console.log(`   ⏭️  Unresolved (skip): ${fingerprint}`);
+      if (unresolvedComments.has(fingerprintV2) || unresolvedComments.has(fingerprintV1)) {
+        console.log(`   ⏭️  Unresolved (skip): ${fingerprintV1}`);
         skippedOld++;
         continue;
       }
-      if (postedThisRun.has(fingerprint)) {
-        console.log(`   ⏭️  Duplicate in run (skip): ${fingerprint}`);
+      if (postedThisRun.has(fingerprintV2)) {
+        console.log(`   ⏭️  Duplicate in run (skip): ${fingerprintV1}`);
         skippedDup++;
         continue;
       }
@@ -123,12 +133,12 @@ async function main() {
         await octokit.pulls.createReviewComment({
           owner, repo,
           pull_number: pullNumber,
-          body: `${emoji} **[${comment.skill.toUpperCase()}]** ${comment.body}`,
+          body: `${emoji} **[${comment.skill.toUpperCase()}]** ${comment.body}\n\n<!-- ai-pr-reviewer-fp:${bodyHash} -->`,
           path: filename,
           line: comment.line,
           commit_id: commitSha,
         });
-        postedThisRun.add(fingerprint);
+        postedThisRun.add(fingerprintV2);
         allComments.push({ filename, ...comment });
       } catch (err) {
         console.warn(`   ⚠️  Could not post on ${filename}:${comment.line} — ${err.message}`);

@@ -10,7 +10,7 @@ import { parseReview } from "./utils/parser.js";
 import { chunkPatch } from "./utils/chunker.js";
 import { loadConfig } from "./utils/config.js";
 
-// Retry with exponential backoff on rate-limit (429) and transient errors (500/503)
+// Retry with exponential backoff on rate-limit (429) and transient errors (500/502/503/504)
 async function withRetry(fn, { maxAttempts = 3, baseDelayMs = 1000 } = {}) {
   let lastErr;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -18,10 +18,12 @@ async function withRetry(fn, { maxAttempts = 3, baseDelayMs = 1000 } = {}) {
       return await fn();
     } catch (err) {
       const status = err.status ?? err.response?.status;
-      const isRetryable = status === 429 || status === 500 || status === 503;
+      const isRetryable = status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
       if (!isRetryable || attempt === maxAttempts) throw err;
 
-      const delay = baseDelayMs * 2 ** (attempt - 1);
+      const baseDelay = baseDelayMs * 2 ** (attempt - 1);
+      const jitter = Math.floor(baseDelay * 0.2 * Math.random()); // 0-20% jitter
+      const delay = baseDelay + jitter;
       console.warn(`  ⚠️  API error ${status} (attempt ${attempt}/${maxAttempts}), retrying in ${delay}ms…`);
       await new Promise(r => setTimeout(r, delay));
       lastErr = err;
@@ -31,7 +33,9 @@ async function withRetry(fn, { maxAttempts = 3, baseDelayMs = 1000 } = {}) {
 }
 
 export async function reviewFiles(files, options = {}) {
-  const config = options.apiKey ? options : await loadConfig(options);
+  // Always merge with defaults/env/project config to avoid crashes when callers
+  // pass only partial overrides (e.g. { apiKey }).
+  const config = await loadConfig(options);
 
   if (!config.apiKey) {
     throw new Error(
@@ -113,8 +117,60 @@ export async function reviewFiles(files, options = {}) {
 function shouldSkipFile(filename, ignorePatterns) {
   return ignorePatterns.some((pattern) => {
     if (pattern instanceof RegExp) return pattern.test(filename);
+    if (typeof pattern !== "string" || pattern.length === 0) return false;
+
+    // Simple glob support: "*", "?" and "**" (path segments)
+    if (pattern.includes("*") || pattern.includes("?")) {
+      const re = globToRegExpCached(pattern);
+      return re.test(filename);
+    }
+
+    // Directory-ish patterns like "dist/" should match prefix
+    if (pattern.endsWith("/")) return filename.startsWith(pattern);
+
     return filename.includes(pattern);
   });
+}
+
+const _globCache = new Map();
+function globToRegExpCached(glob) {
+  const cached = _globCache.get(glob);
+  if (cached) return cached;
+  const re = globToRegExp(glob);
+  _globCache.set(glob, re);
+  return re;
+}
+
+// Minimal glob -> RegExp converter for ignore patterns.
+// - "*"  matches any chars except "/"
+// - "**" matches any chars including "/"
+// - "?"  matches a single char except "/"
+function globToRegExp(glob) {
+  const g = String(glob);
+  let out = "^";
+  for (let i = 0; i < g.length; i++) {
+    const c = g[i];
+
+    if (c === "*") {
+      const isDouble = g[i + 1] === "*";
+      if (isDouble) {
+        out += ".*";
+        i++;
+      } else {
+        out += "[^/]*";
+      }
+      continue;
+    }
+    if (c === "?") {
+      out += "[^/]";
+      continue;
+    }
+
+    if ("\\.^$+()[]{}|".includes(c)) out += "\\" + c;
+    else out += c;
+  }
+  out += "$";
+  return new RegExp(out);
 }
 
 function getSystemPrompt() {

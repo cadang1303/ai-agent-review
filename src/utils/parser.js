@@ -30,7 +30,10 @@ export function parseReview(rawText, filename) {
     return {
       comments,
       summary: parsed.summary ?? "",
-      score: parseInt(parsed.score) || 100,
+      score: (() => {
+        const n = typeof parsed.score === "number" ? parsed.score : parseInt(parsed.score, 10);
+        return Number.isFinite(n) ? n : 100;
+      })(),
     };
   } catch (err) {
     const match = text.match(/\{[\s\S]*\}/);
