@@ -6,6 +6,7 @@ import { reviewFiles } from "./index.js";
 import { loadConfig } from "./utils/config.js";
 import { buildSummary } from "./utils/summary.js";
 import { deletePreviousSummary, getUnresolvedBotComments } from "./utils/github.js";
+import { validateSkills } from "./utils/prompt.js";
 
 async function testModelAccess(config) {
   console.log(`🧪  Testing model access: ${config.model}`);
@@ -26,6 +27,14 @@ async function testModelAccess(config) {
     if (err.error)  console.error(`    Detail: ${JSON.stringify(err.error, null, 2)}`);
     process.exit(1);
   }
+}
+
+async function listAllFiles(octokit, { owner, repo, pullNumber }) {
+  return octokit.paginate(
+    octokit.pulls.listFiles,
+    { owner, repo, pull_number: pullNumber, per_page: 100 },
+    (response) => response.data
+  );
 }
 
 async function main() {
@@ -54,33 +63,36 @@ async function main() {
     process.exit(1);
   }
 
+  // Validate skills up front — warn about typos before doing any API work
+  config.skills = validateSkills(config.skills);
+  if (config.skills.length === 0) {
+    console.error("❌  No valid skills found. Check your ai-reviewer.config.js.");
+    process.exit(1);
+  }
+
   console.log(`\n🤖  AI PR Reviewer (powered by Anthropic Claude)`);
-  console.log(`📦  Model: ${config.model}`);
-  console.log(`🔑  Key:   ${config.apiKey ? config.apiKey.slice(0, 14) + "..." : "MISSING ❌"}\n`);
+  console.log(`📦  Model:  ${config.model}`);
+  console.log(`🔑  Key:    ${config.apiKey ? config.apiKey.slice(0, 14) + "..." : "MISSING ❌"}`);
+  console.log(`🛠️   Skills: ${config.skills.join(", ")}\n`);
 
   await testModelAccess(config);
 
   const octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
-
   console.log(`🔍  Fetching PR #${pullNumber} in ${owner}/${repo}\n`);
 
-  // ── Step 1: fetch all PR data + unresolved threads in parallel ─────────────
-  const [{ data: pr }, { data: files }, unresolvedComments] = await Promise.all([
+  const [{ data: pr }, files, unresolvedComments] = await Promise.all([
     octokit.pulls.get({ owner, repo, pull_number: pullNumber }),
-    octokit.pulls.listFiles({ owner, repo, pull_number: pullNumber, per_page: 100 }),
+    listAllFiles(octokit, { owner, repo, pullNumber }),
     getUnresolvedBotComments(octokit, { owner, repo, pullNumber }),
   ]);
 
   const commitSha = pr.head.sha;
   console.log(`📄  Found ${files.length} changed file(s)\n`);
 
-  // ── Step 2: delete old summary BEFORE running the AI (runs early) ──────────
   await deletePreviousSummary(octokit, { owner, repo, pullNumber });
 
-  // ── Step 3: run AI review ──────────────────────────────────────────────────
   const results = await reviewFiles(files, config);
 
-  // ── Step 4: post inline comments with deduplication ───────────────────────
   const postedThisRun = new Set();
   let totalErrors   = 0;
   let totalWarnings = 0;
@@ -124,7 +136,6 @@ async function main() {
     }
   }
 
-  // ── Step 5: post fresh summary ─────────────────────────────────────────────
   const summary = buildSummary(results, totalErrors, totalWarnings, config);
   await octokit.issues.createComment({
     owner, repo, issue_number: pullNumber, body: summary,

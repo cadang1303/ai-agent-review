@@ -7,20 +7,38 @@
  * ─────────────────
  * We cannot rely on the model to count file-level line numbers accurately.
  * Instead we:
- *   1. Number every line in the diff chunk sequentially (1, 2, 3…) — "diff position"
+ *   1. Number every line in the diff chunk sequentially [NNN] — "diff position"
  *   2. Build a map: diff_position → file_line_number  (only for + lines)
  *   3. Ask the model to report the diff position of the problematic line
- *   4. Look up the real file line number in the map before posting to GitHub
+ *   4. Look up the real file line number in the map — no model arithmetic needed
  *
- * This keeps the model's job simple (count visible lines 1…N) and puts the
- * coordinate conversion entirely in deterministic code.
+ * SPECIAL LINE HANDLING
+ * ─────────────────────
+ * "\ No newline at end of file" (backslash marker) is a diff annotation, NOT
+ * a real file line. It must be recognised and skipped in both:
+ *   - buildLineMap:   don't advance fileLineNo (it's not a real line)
+ *   - annotatePatch:  don't assign a diffPos (model must not reference it)
  *
- * Unified diff hunk header format:
- *   @@ -<old_start>,<old_count> +<new_start>,<new_count> @@
- *   new_start = first right-side (new file) line number in this hunk
+ * Trailing empty strings produced by split("\n") on a patch ending with \n
+ * must also be stripped — they'd produce a spurious [NNN] entry in the
+ * annotated output and waste a token.
+ *
+ * CHUNKING RULES
+ * ──────────────
+ * A chunk MUST always start with a @@ hunk header. We group whole hunks into
+ * chunks — never split a hunk mid-content.
  */
 
 const CHARS_PER_TOKEN = 4;
+const NO_NEWLINE_MARKER = "\\ No newline at end of file";
+
+/**
+ * Returns true for lines that are diff annotations, not real file lines.
+ * These lines must not advance fileLineNo and must not get a diffPos.
+ */
+function isDiffAnnotation(line) {
+  return line.startsWith("\\") || line === "";
+}
 
 /**
  * Parses the right-side starting line number from a hunk header.
@@ -32,45 +50,65 @@ function parseHunkStartLine(header) {
 }
 
 /**
- * Builds a diff-position → file-line-number map for a patch string.
- *
- * Diff position = 1-based index of each line in the patch text (including
- * hunk headers and context lines). GitHub uses this same counting scheme
- * internally.
- *
- * Only + lines (added lines) get a file line number entry because GitHub's
- * createReviewComment API only accepts positions on added or context lines
- * of the right side — and we only want to comment on added code.
- *
- * Returns: Map<diffPosition, fileLineNumber>
+ * Splits a patch string into individual hunks.
+ * Each hunk starts with its @@ header and includes all following lines
+ * until the next @@ header.
  */
-export function buildLineMap(patch) {
-  const map = new Map(); // diffPosition → fileLineNumber
+function splitIntoHunks(patch) {
   const lines = patch.split("\n");
-
-  let diffPos = 0;       // 1-based position within this patch
-  let fileLineNo = null; // current right-side line number
+  const hunks = [];
+  let current = [];
 
   for (const line of lines) {
+    if (line.startsWith("@@") && current.length > 0) {
+      hunks.push(current.join("\n"));
+      current = [];
+    }
+    current.push(line);
+  }
+  if (current.length > 0) hunks.push(current.join("\n"));
+
+  return hunks;
+}
+
+/**
+ * Builds a diff-position → file-line-number map for a patch string.
+ *
+ * Diff position = 1-based index, counting only real lines (not annotations).
+ * Only + lines (added lines) are mapped.
+ *
+ * Special handling:
+ *   "\ No newline at end of file" — skipped entirely (not a real line)
+ *   trailing empty string from split("\n") — skipped
+ */
+export function buildLineMap(patch) {
+  const map = new Map();
+  const lines = patch.split("\n");
+  let diffPos = 0;
+  let fileLineNo = null;
+
+  for (const line of lines) {
+    // Skip diff annotations and trailing empty strings — they are not real lines
+    // and must not consume a diffPos or advance the file line counter
+    if (isDiffAnnotation(line)) continue;
+
     diffPos++;
 
     if (line.startsWith("@@")) {
-      // Hunk header — reset file line counter
       fileLineNo = parseHunkStartLine(line);
-      // Don't add hunk headers to the map (can't comment on them)
+      // hunk headers are not file lines — don't add to map
       continue;
     }
 
-    if (fileLineNo === null) continue; // before first hunk
+    if (fileLineNo === null) continue;
 
     if (line.startsWith("+")) {
-      // Added line — record mapping and advance file line
       map.set(diffPos, fileLineNo);
       fileLineNo++;
     } else if (line.startsWith("-")) {
-      // Removed line — only in old file, don't advance right-side counter
+      // removed line — right-side counter does not advance
     } else {
-      // Context line — exists in both files, advance right-side counter
+      // context line (starts with space) — advances right-side counter
       fileLineNo++;
     }
   }
@@ -79,40 +117,46 @@ export function buildLineMap(patch) {
 }
 
 /**
- * Annotates the patch with 1-based diff position numbers on each line.
- * The model sees these numbers and reports back which position has an issue.
+ * Annotates the patch with [NNN] position numbers on each line.
+ * The model sees these and reports back which [NNN] has an issue.
+ *
+ * Diff annotations ("\ No newline") and trailing empty lines are excluded
+ * so that the [NNN] sequence matches the lineMap keys exactly.
  *
  * Example output:
- *   [1]  @@ -10,4 +12,5 @@
- *   [2]   context line
- *   [3] + added line        ← model reports diffPos 3
- *   [4]   another context
- *
- * Only + lines are eligible for comments. We mark them clearly.
+ *   [  1] @@ -10,4 +12,5 @@
+ *   [  2]  context line
+ *   [  3]+ added line        ← model reports diffPos 3
+ *   [  4]  another context
  */
 function annotatePatch(patch) {
   const lines = patch.split("\n");
+  const annotated = [];
   let diffPos = 0;
-  return lines.map(line => {
+
+  for (const line of lines) {
+    // Skip annotations — no diffPos assigned, not shown to model
+    if (isDiffAnnotation(line)) continue;
+
     diffPos++;
-    const prefix = String(diffPos).padStart(3);
-    if (line.startsWith("+")) {
-      return `[${prefix}]+ ${line.slice(1)}`; // clearly marks added lines
-    } else if (line.startsWith("-")) {
-      return `[${prefix}]- ${line.slice(1)}`;
-    } else if (line.startsWith("@@")) {
-      return `[${prefix}]  ${line}`;
-    } else {
-      return `[${prefix}]  ${line}`;
-    }
-  }).join("\n");
+    const n = String(diffPos).padStart(3);
+
+    if (line.startsWith("+"))  annotated.push(`[${n}]+ ${line.slice(1)}`);
+    else if (line.startsWith("-")) annotated.push(`[${n}]- ${line.slice(1)}`);
+    else if (line.startsWith("@@")) annotated.push(`[${n}]  ${line}`);
+    else annotated.push(`[${n}]  ${line}`);
+  }
+
+  return annotated.join("\n");
 }
 
 /**
- * Splits a patch into chunks, each with:
- *   - patch:        original diff text (for context in the prompt)
- *   - annotated:    patch with [NNN] diff-position numbers prepended
- *   - lineMap:      Map<diffPosition, fileLineNumber> for + lines only
+ * Splits a patch into chunks, each guaranteed to start with a @@ header.
+ *
+ * Each returned chunk has:
+ *   - patch:      original diff text
+ *   - annotated:  diff with [NNN] position numbers (annotations excluded)
+ *   - lineMap:    Map<diffPosition, fileLineNumber>
  */
 export function chunkPatch(patch, maxTokens = 3000) {
   const maxChars = maxTokens * CHARS_PER_TOKEN;
@@ -125,23 +169,30 @@ export function chunkPatch(patch, maxTokens = 3000) {
     }];
   }
 
-  // Split on hunk headers, keeping them attached to their content
-  const parts = patch.split(/(^@@[^@]+@@.*$)/m);
+  const hunks = splitIntoHunks(patch);
   const chunks = [];
-  let current = "";
+  let currentHunks = [];
+  let currentLen = 0;
 
-  for (const part of parts) {
-    if (current.length + part.length > maxChars && current.length > 0) {
-      chunks.push(current.trim());
-      current = "";
+  for (const hunk of hunks) {
+    if (currentLen + hunk.length > maxChars && currentHunks.length > 0) {
+      const str = currentHunks.join("\n");
+      chunks.push({ patch: str, annotated: annotatePatch(str), lineMap: buildLineMap(str) });
+      currentHunks = [];
+      currentLen = 0;
     }
-    current += part;
+    currentHunks.push(hunk);
+    currentLen += hunk.length;
   }
-  if (current.trim()) chunks.push(current.trim());
 
-  return (chunks.length > 0 ? chunks : [patch]).map(p => ({
-    patch: p,
-    annotated: annotatePatch(p),
-    lineMap: buildLineMap(p),
-  }));
+  if (currentHunks.length > 0) {
+    const str = currentHunks.join("\n");
+    chunks.push({ patch: str, annotated: annotatePatch(str), lineMap: buildLineMap(str) });
+  }
+
+  return chunks.length > 0 ? chunks : [{
+    patch,
+    annotated: annotatePatch(patch),
+    lineMap: buildLineMap(patch),
+  }];
 }

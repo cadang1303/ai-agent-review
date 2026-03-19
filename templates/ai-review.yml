@@ -10,40 +10,27 @@ jobs:
     runs-on: ubuntu-latest
 
     permissions:
-      pull-requests: write   # post and delete review comments
-      issues: write          # post and DELETE issue comments (summary)
+      pull-requests: write
+      issues: write
       contents: read
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: "20"
 
-      - name: Install reviewer dependencies
-        working-directory: .ai-reviewer
-        run: npm install
-
       - name: Run AI Review
-        working-directory: .ai-reviewer
         env:
-          # Add ANTHROPIC_API_KEY in: repo Settings → Secrets → Actions
-          # Get your key at: console.anthropic.com
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-
-          # GITHUB_TOKEN is auto-provided — no setup needed
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-
-          # REVIEWER_MODEL: claude-haiku-4-5-20251001   # default (cheapest)
-          # REVIEWER_MODEL: claude-sonnet-4-6            # recommended for production
-          # REVIEWER_MODEL: claude-opus-4-6              # most capable
-          # REVIEWER_SKILLS: convention,lint,security
+          # REVIEWER_MODEL: claude-haiku-4-5-20251001   # default
+          # REVIEWER_MODEL: claude-sonnet-4-6            # production
+          # REVIEWER_SKILLS: code-quality,security
           # REVIEWER_FAIL_ON_ERROR: "false"
-        run: node src/cli.js
+        run: npx ai-pr-reviewer@latest

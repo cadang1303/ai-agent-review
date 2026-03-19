@@ -1,7 +1,7 @@
 {
   "name": "ai-pr-reviewer",
-  "version": "5.0.0",
-  "description": "AI-powered pull request code reviewer using Anthropic Claude — skill-file architecture",
+  "version": "2.0.0",
+  "description": "AI-powered pull request code reviewer using Anthropic Claude — Agent Skills format",
   "type": "module",
   "main": "src/index.js",
   "bin": { "ai-pr-reviewer": "src/cli.js" },
@@ -9,8 +9,10 @@
     "review": "node src/cli.js",
     "test":   "node src/test-local.js"
   },
-  "keywords": ["github-actions", "code-review", "ai", "claude", "anthropic", "pull-request"],
+  "keywords": ["github-actions", "code-review", "ai", "claude", "anthropic", "pull-request", "agent-skills"],
   "license": "MIT",
+  "engines": { "node": ">=18.0.0" },
+  "files": ["src/", "skills/", "templates/"],
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
     "@octokit/rest": "^21.0.0"

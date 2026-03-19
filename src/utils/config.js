@@ -4,13 +4,13 @@ import { pathToFileURL } from "url";
 
 export const ANTHROPIC_MODELS = {
   HAIKU:  "claude-haiku-4-5-20251001",  // fastest & cheapest — great for testing
-  SONNET: "claude-sonnet-4-6",          // best balance of quality and cost (recommended)
-  OPUS:   "claude-opus-4-6",            // most capable — for critical repos
+  SONNET: "claude-sonnet-4-6",           // best balance of quality and cost (recommended)
+  OPUS:   "claude-opus-4-6",             // most capable — for critical repos
 };
 
 const DEFAULTS = {
   model: ANTHROPIC_MODELS.HAIKU,
-  skills: ["code-quality", "logic", "reliability", "security"],
+  skills: ["code-quality", "correctness", "reliability", "security"],
   ignorePatterns: [
     "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
     ".min.js", ".min.css", "dist/", "build/", "__snapshots__/",

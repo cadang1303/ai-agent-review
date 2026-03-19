@@ -1,5 +1,5 @@
 /**
- * test-local.js — test the reviewer without a real PR
+ * test-local.js — test without a real PR
  *
  * Usage:
  *   ANTHROPIC_API_KEY=sk-ant-... node src/test-local.js
@@ -21,7 +21,7 @@ const MOCK_FILES = [
 +router.post('/login', async (req, res) => {
 +  const username = req.body.username
 +  const password = req.body.password
-+  const query = "SELECT * FROM users WHERE username = '" + username + "' AND password = '" + password + "'"
++  const query = "SELECT * FROM users WHERE username = '" + username + "'"
 +  const user = await db.query(query)
 +  if (user) { res.json({ token: 'logged_in', user: user }) }
 +})
@@ -33,12 +33,11 @@ const MOCK_FILES = [
 +})
 +
 +function validateEmail(e) { return e.includes('@') }
-+
 +module.exports = router`,
   },
   {
     filename: "src/utils/math.js",
-    patch: `@@ -0,0 +1,18 @@
+    patch: `@@ -0,0 +1,12 @@
 +export function average(numbers) {
 +  let sum = 0
 +  for (let i = 0; i <= numbers.length; i++) { sum += numbers[i] }
@@ -69,7 +68,7 @@ console.log("📦  Model: claude-haiku-4-5-20251001 (cheapest — good for testi
 const results = await reviewFiles(MOCK_FILES, {
   apiKey: process.env.ANTHROPIC_API_KEY,
   model: "claude-haiku-4-5-20251001",
-  skills: ["code-quality", "logic", "reliability", "security"],
+  skills: ["code-quality", "correctness", "reliability", "security"],
   failOnError: false,
   ignorePatterns: ["package-lock.json"],
 });

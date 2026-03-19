@@ -1,31 +1,47 @@
 /**
  * ai-pr-reviewer — core module
- * Uses GitHub Models (free) via the OpenAI-compatible API.
+ * Uses Anthropic Claude via the official SDK.
+ * Requires ANTHROPIC_API_KEY set as a GitHub Actions secret.
  */
 
-import OpenAI from "openai";
+import Anthropic from "@anthropic-ai/sdk";
 import { buildReviewPrompt } from "./utils/prompt.js";
 import { parseReview } from "./utils/parser.js";
 import { chunkPatch } from "./utils/chunker.js";
-import { loadConfig, GITHUB_MODELS_ENDPOINT } from "./utils/config.js";
+import { loadConfig } from "./utils/config.js";
+
+// Retry with exponential backoff on rate-limit (429) and transient errors (500/503)
+async function withRetry(fn, { maxAttempts = 3, baseDelayMs = 1000 } = {}) {
+  let lastErr;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      const status = err.status ?? err.response?.status;
+      const isRetryable = status === 429 || status === 500 || status === 503;
+      if (!isRetryable || attempt === maxAttempts) throw err;
+
+      const delay = baseDelayMs * 2 ** (attempt - 1);
+      console.warn(`  ⚠️  API error ${status} (attempt ${attempt}/${maxAttempts}), retrying in ${delay}ms…`);
+      await new Promise(r => setTimeout(r, delay));
+      lastErr = err;
+    }
+  }
+  throw lastErr;
+}
 
 export async function reviewFiles(files, options = {}) {
   const config = options.apiKey ? options : await loadConfig(options);
 
   if (!config.apiKey) {
     throw new Error(
-      "No API key found.\n" +
-      "→ Create a PAT at: github.com/settings/tokens (Models → Read)\n" +
-      "→ Add as repo secret: GH_MODELS_TOKEN"
+      "No ANTHROPIC_API_KEY found.\n" +
+      "→ Get your key at: console.anthropic.com\n" +
+      "→ Add it as a GitHub Actions secret named ANTHROPIC_API_KEY"
     );
   }
 
-  const client = new OpenAI({
-    baseURL: GITHUB_MODELS_ENDPOINT,
-    apiKey: config.apiKey,
-    defaultHeaders: { "X-GitHub-Api-Version": "2022-11-28" },
-  });
-
+  const client = new Anthropic({ apiKey: config.apiKey });
   const allResults = [];
 
   for (const file of files) {
@@ -34,24 +50,22 @@ export async function reviewFiles(files, options = {}) {
 
     console.log(`  Reviewing: ${file.filename}`);
 
-    // Each chunk has: patch, annotated (with [NNN] prefixes), lineMap
     const chunks = chunkPatch(file.patch, config.maxTokensPerChunk);
     const fileComments = [];
 
     for (const { annotated, lineMap } of chunks) {
-      // Model sees annotated diff with [NNN] position markers
       const prompt = buildReviewPrompt(file.filename, annotated, config.skills);
 
       let response;
       try {
-        response = await client.chat.completions.create({
-          model: config.model,
-          max_tokens: 1024,
-          messages: [
-            { role: "system", content: getSystemPrompt() },
-            { role: "user",   content: prompt },
-          ],
-        });
+        response = await withRetry(() =>
+          client.messages.create({
+            model: config.model,
+            max_tokens: 4096,
+            system: getSystemPrompt(),
+            messages: [{ role: "user", content: prompt }],
+          })
+        );
       } catch (err) {
         console.error(`  ⚠️  API call failed for ${file.filename}: ${err.message}`);
         if (err.status) console.error(`     Status: ${err.status}`);
@@ -59,13 +73,15 @@ export async function reviewFiles(files, options = {}) {
         continue;
       }
 
-      if (!response?.choices?.length) {
-        console.warn(`  ⚠️  Unexpected response for ${file.filename}`);
+      // Anthropic SDK: response.content is an array of blocks
+      const textBlock = response.content?.find(b => b.type === "text");
+      if (!textBlock) {
+        console.warn(`  ⚠️  No text block in response for ${file.filename}`);
+        console.warn("     Full response:", JSON.stringify(response, null, 2));
         continue;
       }
 
-      const text = response.choices[0].message?.content ?? "";
-      const parsed = parseReview(text, file.filename);
+      const parsed = parseReview(textBlock.text, file.filename);
 
       for (const comment of parsed.comments) {
         if (comment.diffPos === null) {
@@ -73,12 +89,8 @@ export async function reviewFiles(files, options = {}) {
           continue;
         }
 
-        // Convert diffPos → real file line number using the map
         const fileLine = lineMap.get(comment.diffPos);
-
         if (!fileLine) {
-          // Model returned a diffPos that doesn't correspond to an added line
-          // (e.g. a context line or removed line position)
           console.warn(`  ⚠️  diffPos ${comment.diffPos} in ${file.filename} is not an added line — skipping`);
           continue;
         }
