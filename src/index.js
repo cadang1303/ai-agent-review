@@ -9,6 +9,27 @@ import { parseReview } from "./utils/parser.js";
 import { chunkPatch } from "./utils/chunker.js";
 import { loadConfig, GITHUB_MODELS_ENDPOINT } from "./utils/config.js";
 
+// Retry an async fn up to maxAttempts times with exponential backoff.
+// Only retries on rate-limit (429) and transient server errors (500/503).
+async function withRetry(fn, { maxAttempts = 3, baseDelayMs = 1000 } = {}) {
+  let lastErr;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      const status = err.status ?? err.response?.status;
+      const isRetryable = status === 429 || status === 500 || status === 503;
+      if (!isRetryable || attempt === maxAttempts) throw err;
+
+      const delay = baseDelayMs * 2 ** (attempt - 1);   // 1s, 2s, 4s
+      console.warn(`  ⚠️  API error ${status} (attempt ${attempt}/${maxAttempts}), retrying in ${delay}ms…`);
+      await new Promise(r => setTimeout(r, delay));
+      lastErr = err;
+    }
+  }
+  throw lastErr;
+}
+
 export async function reviewFiles(files, options = {}) {
   const config = options.apiKey ? options : await loadConfig(options);
 
@@ -34,24 +55,24 @@ export async function reviewFiles(files, options = {}) {
 
     console.log(`  Reviewing: ${file.filename}`);
 
-    // Each chunk has: patch, annotated (with [NNN] prefixes), lineMap
     const chunks = chunkPatch(file.patch, config.maxTokensPerChunk);
     const fileComments = [];
 
     for (const { annotated, lineMap } of chunks) {
-      // Model sees annotated diff with [NNN] position markers
       const prompt = buildReviewPrompt(file.filename, annotated, config.skills);
 
       let response;
       try {
-        response = await client.chat.completions.create({
-          model: config.model,
-          max_tokens: 1024,
-          messages: [
-            { role: "system", content: getSystemPrompt() },
-            { role: "user",   content: prompt },
-          ],
-        });
+        response = await withRetry(() =>
+          client.chat.completions.create({
+            model: config.model,
+            max_tokens: 4096,   // increased: 1024 too small for files with many issues
+            messages: [
+              { role: "system", content: getSystemPrompt() },
+              { role: "user",   content: prompt },
+            ],
+          })
+        );
       } catch (err) {
         console.error(`  ⚠️  API call failed for ${file.filename}: ${err.message}`);
         if (err.status) console.error(`     Status: ${err.status}`);
@@ -73,12 +94,8 @@ export async function reviewFiles(files, options = {}) {
           continue;
         }
 
-        // Convert diffPos → real file line number using the map
         const fileLine = lineMap.get(comment.diffPos);
-
         if (!fileLine) {
-          // Model returned a diffPos that doesn't correspond to an added line
-          // (e.g. a context line or removed line position)
           console.warn(`  ⚠️  diffPos ${comment.diffPos} in ${file.filename} is not an added line — skipping`);
           continue;
         }

@@ -6,6 +6,7 @@ import { reviewFiles } from "./index.js";
 import { loadConfig, GITHUB_MODELS_ENDPOINT } from "./utils/config.js";
 import { buildSummary } from "./utils/summary.js";
 import { deletePreviousSummary, getUnresolvedBotComments } from "./utils/github.js";
+import { validateSkills } from "./utils/prompt.js";
 
 async function testModelAccess(config) {
   console.log(`🧪  Testing model access: ${config.model}`);
@@ -31,6 +32,19 @@ async function testModelAccess(config) {
     if (err.error)  console.error(`    Detail:   ${JSON.stringify(err.error, null, 2)}`);
     process.exit(1);
   }
+}
+
+/**
+ * Fetches ALL changed files in the PR, paginating through results.
+ * GitHub's per_page max is 100 — PRs with >100 files need multiple requests.
+ */
+async function listAllFiles(octokit, { owner, repo, pullNumber }) {
+  const files = await octokit.paginate(
+    octokit.pulls.listFiles,
+    { owner, repo, pull_number: pullNumber, per_page: 100 },
+    (response) => response.data
+  );
+  return files;
 }
 
 async function main() {
@@ -59,27 +73,35 @@ async function main() {
     process.exit(1);
   }
 
+  // Validate skills up front — warn about typos before doing any API work
+  config.skills = validateSkills(config.skills);
+  if (config.skills.length === 0) {
+    console.error("❌  No valid skills found. Check your ai-reviewer.config.js.");
+    process.exit(1);
+  }
+
   console.log(`\n🤖  AI PR Reviewer (powered by GitHub Models — free)`);
   console.log(`📦  Model:    ${config.model}`);
   console.log(`🌐  Endpoint: ${GITHUB_MODELS_ENDPOINT}`);
-  console.log(`🔑  Token:    ${config.apiKey ? config.apiKey.slice(0, 12) + "..." : "MISSING ❌"}\n`);
+  console.log(`🔑  Token:    ${config.apiKey ? config.apiKey.slice(0, 12) + "..." : "MISSING ❌"}`);
+  console.log(`🛠️   Skills:   ${config.skills.join(", ")}\n`);
 
   await testModelAccess(config);
 
   const octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
   console.log(`🔍  Fetching PR #${pullNumber} in ${owner}/${repo}\n`);
 
-  // Step 1: fetch PR data + unresolved threads in parallel
-  const [{ data: pr }, { data: files }, unresolvedComments] = await Promise.all([
+  // Step 1: fetch all PR data in parallel, with full file pagination
+  const [{ data: pr }, files, unresolvedComments] = await Promise.all([
     octokit.pulls.get({ owner, repo, pull_number: pullNumber }),
-    octokit.pulls.listFiles({ owner, repo, pull_number: pullNumber, per_page: 100 }),
+    listAllFiles(octokit, { owner, repo, pullNumber }),
     getUnresolvedBotComments(octokit, { owner, repo, pullNumber }),
   ]);
 
   const commitSha = pr.head.sha;
   console.log(`📄  Found ${files.length} changed file(s)\n`);
 
-  // Step 2: delete old summary BEFORE running AI (runs early, avoids long wait)
+  // Step 2: delete old summary BEFORE running AI
   await deletePreviousSummary(octokit, { owner, repo, pullNumber });
 
   // Step 3: run AI review
