@@ -20,5 +20,5 @@ export default {
     ".min.js", ".min.css", "dist/", "build/", "__snapshots__/",
     ".svg", ".png", ".jpg", ".ico",
   ],
-  maxTokensPerChunk: 3000,
+  maxTokensPerChunk: 8000,
 };
