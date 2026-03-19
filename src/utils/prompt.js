@@ -1,12 +1,14 @@
 /**
- * prompt.js — loads skill instructions from SKILL.md files and builds the review prompt.
+ * prompt.js — loads skill instructions and builds the review prompt.
  *
- * Agent Skills format (agentskills.io):
- *   Each skill is a directory containing a SKILL.md with YAML frontmatter.
+ * LINE NUMBER APPROACH
+ * ────────────────────
+ * The diff sent to the model has each line prefixed with [NNN] where NNN is
+ * the diff position (1-based). The model reports which [NNN] position has an
+ * issue. index.js then looks up the real file line number from the lineMap.
  *
- * Skill resolution order (first match wins):
- *   1. <project-root>/.ai-reviewer-skills/<skill>/SKILL.md  ← per-project override
- *   2. <npm-package>/skills/<skill>/SKILL.md                 ← built-in default
+ * This is more reliable than asking the model to compute file line numbers
+ * from @@ headers — models miscalculate that frequently.
  */
 
 import { readFileSync, existsSync } from "fs";
@@ -18,18 +20,12 @@ const BUILTIN_SKILLS_DIR = resolve(__dirname, "../../skills");
 const PROJECT_SKILLS_DIR = resolve(process.cwd(), ".ai-reviewer-skills");
 
 const EXT_LANGUAGE_MAP = {
-  ".js":   "JavaScript",
-  ".jsx":  "JavaScript (React)",
-  ".ts":   "TypeScript",
-  ".tsx":  "TypeScript (React)",
-  ".py":   "Python",
-  ".go":   "Go",
-  ".java": "Java",
-  ".rb":   "Ruby",
-  ".rs":   "Rust",
-  ".php":  "PHP",
-  ".cs":   "C#",
-  ".cpp":  "C++",
+  ".js":   "JavaScript",  ".jsx": "JavaScript (React)",
+  ".ts":   "TypeScript",  ".tsx": "TypeScript (React)",
+  ".py":   "Python",      ".go":  "Go",
+  ".java": "Java",        ".rb":  "Ruby",
+  ".rs":   "Rust",        ".php": "PHP",
+  ".cs":   "C#",          ".cpp": "C++",
   ".c":    "C",
 };
 
@@ -56,15 +52,13 @@ function loadSkill(skillName) {
 }
 
 /**
- * Builds the review prompt for one chunk of a diff.
+ * Builds the review prompt.
  *
- * @param {string} filename
- * @param {string} patch      - The diff text for this chunk
- * @param {number|null} startLine - Right-side line number of the first line in this chunk.
- *                                  Used to tell the model which line numbers to use.
+ * @param {string}   filename
+ * @param {string}   annotatedPatch  - Diff with [NNN] position prefixes from chunker
  * @param {string[]} enabledSkills
  */
-export function buildReviewPrompt(filename, patch, startLine, enabledSkills) {
+export function buildReviewPrompt(filename, annotatedPatch, enabledSkills) {
   const ext = "." + filename.split(".").pop().toLowerCase();
   const language = EXT_LANGUAGE_MAP[ext] ?? "unknown language";
 
@@ -73,15 +67,12 @@ export function buildReviewPrompt(filename, patch, startLine, enabledSkills) {
     .filter(Boolean)
     .join("\n\n---\n\n");
 
-  // Tell the model exactly how to count lines so it returns file-level numbers
-  const lineInstruction = startLine != null
-    ? `The first added line (+) in this diff is line ${startLine} in the file.
-Count lines from there when reporting the "line" field — report the actual file line number, not the position within this diff chunk.`
-    : `Report the line number of the added (+) line where each issue appears, as it would appear in the file.`;
-
   return `Review this ${language} diff from file \`${filename}\`.
 
-${lineInstruction}
+Each line is prefixed with [NNN] where NNN is its position number in this diff.
+Lines marked with [NNN]+ are ADDED lines (the ones you can comment on).
+Lines marked with [NNN]- are REMOVED lines (do not report these).
+Lines marked with [NNN]  are CONTEXT lines (do not report these).
 
 Apply only the skills listed below. Flag only what is visible in the diff.
 
@@ -93,7 +84,7 @@ Return ONLY valid JSON — no markdown fences, no preamble:
 {
   "comments": [
     {
-      "line": <integer — the file line number of the added (+) line where the issue is>,
+      "diffPos": <integer — the [NNN] position number of the added (+) line with the issue>,
       "skill": "<skill name>",
       "severity": "error" | "warning" | "info",
       "body": "<rule ID and clear, actionable description>"
@@ -103,16 +94,15 @@ Return ONLY valid JSON — no markdown fences, no preamble:
   "score": <integer 0-100>
 }
 
-Rules for the "line" field:
-- Use the RIGHT-SIDE (+) line number as it appears in the actual file, not the diff position
-- Only report lines that start with + in the diff (added lines)
-- Do NOT report lines starting with - (removed lines) or space (context lines)
-- If the issue spans multiple lines, use the first affected + line
+IMPORTANT for "diffPos":
+- Only use [NNN] numbers from lines marked with +
+- Use the position of the FIRST problematic added line
+- Do NOT use positions from - or context lines
 
 If no issues: { "comments": [], "summary": "No issues found.", "score": 100 }
 
 Diff:
 \`\`\`diff
-${patch}
+${annotatedPatch}
 \`\`\``;
 }
