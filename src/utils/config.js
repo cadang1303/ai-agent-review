@@ -20,7 +20,7 @@ const DEFAULTS = {
   ignorePatterns: [
     "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
     ".min.js", ".min.css", "dist/", "build/", "__snapshots__/",
-    ".svg", ".png", ".jpg",
+    ".svg", ".png", ".jpg", ".md"
   ],
   maxTokensPerChunk: 3000,
   failOnError: true,

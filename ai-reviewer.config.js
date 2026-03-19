@@ -12,13 +12,13 @@ export default {
 
   // Built-in skills (Agent Skills format): convention | lint | security | logic | tests | performance | types | unit-test
   // Add custom skills by creating <skill-name>/SKILL.md in .ai-reviewer-skills/
-  skills: ["code-quality", "correctness", "reliability", "security"],
+  skills: ["code-quality", "reliability", "security", "correctness"],
 
   failOnError: true,
   ignorePatterns: [
     "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
     ".min.js", ".min.css", "dist/", "build/", "__snapshots__/",
-    ".svg", ".png", ".jpg", ".ico",
+    ".svg", ".png", ".jpg", ".ico", ".md"
   ],
   maxTokensPerChunk: 3000,
 };
