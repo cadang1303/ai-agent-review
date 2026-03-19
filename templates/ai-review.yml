@@ -33,4 +33,4 @@ jobs:
           # REVIEWER_MODEL: claude-sonnet-4-6            # production
           # REVIEWER_SKILLS: code-quality,security
           # REVIEWER_FAIL_ON_ERROR: "false"
-        run: npx ai-pr-reviewer@latest
+        run: node src/cli.js
