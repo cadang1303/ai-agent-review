@@ -9,24 +9,27 @@ metadata:
 
 # Code Quality Review
 
-Review the diff for quality and style issues. Flag only what is visible in the diff — do not speculate about files not shown.
+Review the diff for quality and maintainability issues that are likely to cause defects, confusion, or future rework.
+To reduce noise: do NOT comment on purely subjective preferences unless the diff clearly introduces inconsistency or meaningful risk.
+Flag only what is visible in the diff — do not speculate about files not shown.
 
 ---
 
 ## Naming
 
 **NQ-01 — Non-descriptive names**
-Single-letter or abbreviated variable names are not allowed outside `for` loop counters or math utility functions.
+Avoid single-letter or abbreviated names when they obscure intent and the meaning is not obvious from immediate context.
 - ❌ `const d = new Date()` → ✅ `const createdAt = new Date()`
 - ❌ `function proc(u)` → ✅ `function processUser(user)`
+ - Do NOT flag short names that are conventional and local (e.g. `i`, `j`, `x`, `y`) when scope is tiny and intent is obvious.
 
 **NQ-02 — Boolean naming**
-Boolean variables and properties must use an `is`, `has`, `can`, or `should` prefix.
+Prefer `is/has/can/should` prefixes for booleans when the name would otherwise be ambiguous. Do NOT enforce if the diff is consistent with existing naming in that file/module.
 - ❌ `let active = true` → ✅ `let isActive = true`
 - ❌ `const admin = checkRole()` → ✅ `const isAdmin = checkRole()`
 
 **NQ-03 — Function naming**
-Functions must be named with a verb phrase describing what they do.
+Prefer verb phrases for functions when the name does not already convey action. Do NOT flag established patterns unless confusing.
 - ❌ `function userData()` → ✅ `function fetchUserData()`
 - ❌ `function price(items)` → ✅ `function calculateTotalPrice(items)`
 
@@ -41,12 +44,19 @@ Naming case must match the language convention and must not be mixed within the 
 ## Magic values
 
 **NQ-05 — Magic numbers**
-Any numeric literal other than `0`, `1`, `-1`, or `2` outside a loop counter must be extracted into a named constant. The constant name must explain meaning, not echo the value.
+Avoid introducing magic numbers when the meaning is non-obvious or the number is used in multiple places.
+To reduce noise, ONLY flag when at least one of these is true:
+- The same number is introduced in 2+ places in the diff, OR
+- The number controls a policy/limit/retry/timeout/backoff/threshold and has unclear meaning, OR
+- The number is security-sensitive or reliability-sensitive (timeouts, retries).
+Do NOT flag common, self-explanatory constants such as HTTP status codes (200/404), or UI layout numbers when context is obvious.
+The constant name must explain meaning, not echo the value.
 - ❌ `if (retries > 3)` → ✅ `const MAX_RETRIES = 3; if (retries > MAX_RETRIES)`
 - ❌ `setTimeout(fn, 5000)` → ✅ `const SESSION_TIMEOUT_MS = 5000; setTimeout(fn, SESSION_TIMEOUT_MS)`
 
 **NQ-06 — Repeated string literals**
-Hard-coded string literals appearing more than once must be extracted into a named constant or enum.
+Hard-coded string literals appearing more than once should be extracted when they represent a domain value, event name, status, or key where drift would cause bugs.
+Do NOT flag short one-off UI text or logging strings unless duplicated and meaningful.
 - ❌ `if (status === 'pending') ... if (type === 'pending')` repeated in two places
 - ✅ `const STATUS_PENDING = 'pending'`
 
@@ -82,7 +92,7 @@ Statements following a `return`, `throw`, or `break` with no conditional path to
 ## Structure
 
 **NQ-11 — Function length**
-Functions visibly doing more than one thing — indicated by two or more distinct comment blocks explaining separate steps inside a single function body — should be split into sub-functions.
+Flag only when the diff clearly introduces a function that mixes multiple responsibilities and is hard to test/modify. Do NOT flag based on line count alone.
 - ❌ A single 60-line function that validates input, calls DB, formats response, sends email, and logs the result
 - ✅ Extract to `validateInput()`, `saveToDatabase()`, `sendNotification()` called from a thin coordinator
 
@@ -103,5 +113,5 @@ A single file should have one clear responsibility. Flag new files that visibly 
 
 Include the rule ID at the start of the `body` field in each JSON comment.
 - 🔴 `"severity": "error"` — debug statements logging sensitive data, unreachable cleanup code
-- 🟡 `"severity": "warning"` — naming violations, magic numbers, dead code, structure issues
-- 🔵 `"severity": "info"` — mixed responsibilities, minor nits
+- 🟡 `"severity": "warning"` — changes likely to cause defects or ongoing maintenance pain (magic values with unclear meaning, debug code, unused symbols, hard-to-follow structure)
+- 🔵 `"severity": "info"` — only when it's a clear improvement with low urgency and low noise

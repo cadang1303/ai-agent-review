@@ -9,7 +9,9 @@ metadata:
 
 # Correctness Review
 
-Review the diff for runtime logic errors and type safety violations. Flag only what is visible in the diff — do not speculate about files not shown.
+Review the diff for runtime logic errors and type safety violations that can cause crashes, wrong results, or broken async behavior.
+To reduce noise: do NOT require stylistic changes or broad refactors. Comment only when the diff shows a concrete bug or a high-likelihood bug pattern.
+Flag only what is visible in the diff — do not speculate about files not shown.
 
 ---
 
@@ -44,9 +46,12 @@ Every `async` function call returning a Promise inside an `async` function must 
 - Severity: 🔴
 
 **CR-05 — Unhandled promise rejection**
-`async` functions performing external I/O must wrap `await` calls in `try/catch`, or attach `.catch()`. An unhandled rejection in Node.js crashes the process.
-- ❌ `async function load() { const data = await api.get('/users'); }` with no error handling
-- ✅ `try { const data = await api.get('/users'); } catch (err) { logger.error(err); throw err; }`
+Do NOT require `try/catch` around every `await`. Flag ONLY when the diff indicates the error will be dropped or crash unexpectedly, e.g.:
+- A background task / fire-and-forget Promise has no `.catch()` and is not awaited
+- A new `catch {}` / `.catch(() => {})` swallows errors silently
+- A new top-level `await` or process startup path has no visible error boundary and would terminate the process
+- ❌ `void doWork()` where `doWork()` can reject and there's no `.catch()`
+- ✅ `void doWork().catch(err => logger.error(err))`
 - Severity: 🟡
 
 **CR-06 — Async function referenced but not called**
@@ -123,6 +128,7 @@ Variables declared with `var` inside loops and captured by reference in async ca
 Non-trivial functions — those with branching logic, async operations, or multiple return paths — should have explicit return type annotations.
 - ❌ `async function getUser(id: string) { ... }` with implicit return type
 - ✅ `async function getUser(id: string): Promise<User | null> { ... }`
+- To reduce noise, ONLY flag for exported/public APIs added or modified in the diff.
 - Severity: 🔵
 
 **CR-17 — Non-null assertion on potentially null value**
