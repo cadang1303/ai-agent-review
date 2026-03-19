@@ -9,7 +9,7 @@ export default {
 
   // Built-in skills: convention | lint | security | logic | tests | performance | types | unit-test
   // Add custom skills by creating .md files in .ai-reviewer-skills/
-  skills: ["convention", "lint", "security", "logic", "tests"],
+  skills: ["code-quality", "logic", "reliability", "security"],
 
   failOnError: true,
   ignorePatterns: [

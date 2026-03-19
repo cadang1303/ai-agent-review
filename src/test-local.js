@@ -69,7 +69,7 @@ console.log("📦  Model: claude-haiku-4-5-20251001 (cheapest — good for testi
 const results = await reviewFiles(MOCK_FILES, {
   apiKey: process.env.ANTHROPIC_API_KEY,
   model: "claude-haiku-4-5-20251001",
-  skills: ["convention", "lint", "security", "logic", "performance"],
+  skills: ["code-quality", "logic", "reliability", "security"],
   failOnError: false,
   ignorePatterns: ["package-lock.json"],
 });
