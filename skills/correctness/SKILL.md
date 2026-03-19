@@ -1,154 +1,100 @@
 ---
 name: correctness
 description: Reviews diffs for bugs causing wrong results, crashes, or silent data corruption. Covers null/undefined safety, async and promise handling, control flow errors, state mutation bugs, and TypeScript type safety. Use when catching logic errors before production. Replaces the separate logic and types skills.
-license: MIT
-metadata:
-  author: ai-pr-reviewer
-  version: "1.0"
 ---
 
 # Correctness Review
 
-Review the diff for runtime logic errors and type safety violations that can cause crashes, wrong results, or broken async behavior.
-To reduce noise: do NOT require stylistic changes or broad refactors. Comment only when the diff shows a concrete bug or a high-likelihood bug pattern.
-Flag only what is visible in the diff — do not speculate about files not shown.
+Review only visible diff changes. Comment only on concrete bugs or high-likelihood bug patterns — no stylistic changes or broad refactors.
 
 ---
 
-## Null and undefined safety
+## Null / undefined safety
 
-**CR-01 — Unguarded property access**
-Any property access or method call on a value that can be `null`, `undefined`, or absent must be guarded before the access.
-- ❌ `return user.name.toUpperCase()` when `user` may be null
-- ✅ `return user?.name?.toUpperCase() ?? ''`
-- Severity: 🔴
+**CR-01 — Unguarded property access** 🔴
+Guard every access on a value that can be `null`, `undefined`, or absent.
+- ❌ `return user.name.toUpperCase()` (user may be null) → ✅ `return user?.name?.toUpperCase() ?? ''`
 
-**CR-02 — Unguarded array index access**
-Accessing `arr[0]` or any fixed index without a prior length or bounds check is unsafe when the array may be empty.
-- ❌ `const first = items[0].id` with no `items.length` check
-- ✅ `const first = items[0]?.id ?? null`
-- Severity: 🟡
+**CR-02 — Unguarded array index** 🟡
+Accessing `arr[0]` without a bounds check when the array may be empty.
+- ❌ `const first = items[0].id` → ✅ `const first = items[0]?.id ?? null`
 
-**CR-03 — Unsafe type cast bypassing null**
-TypeScript `as SomeType` casts that silently bypass `null | undefined` defer a potential crash. Use type narrowing instead.
-- ❌ `const name = (user.name as string).trim()` when `name` is `string | null`
-- ✅ `if (!user.name) throw new Error('Name required'); const name = user.name.trim()`
-- Severity: 🟡
+**CR-03 — Unsafe cast bypassing null** 🟡
+`as SomeType` that silently bypasses `null | undefined`. Use type narrowing instead.
+- ❌ `(user.name as string).trim()` when name is `string | null`
 
 ---
 
-## Async and promises
+## Async / promises
 
-**CR-04 — Missing await**
-Every `async` function call returning a Promise inside an `async` function must be `await`ed, or explicitly handled with `.then().catch()`. Missing `await` before `fetch`, DB queries, or file I/O is always a critical error.
-- ❌ `const res = fetch(url)` — `res` is a Promise, not a Response
-- ✅ `const res = await fetch(url)`
-- Severity: 🔴
+**CR-04 — Missing await** 🔴
+Every async call inside an `async` function must be `await`ed or explicitly handled with `.then().catch()`.
+- ❌ `const res = fetch(url)` → ✅ `const res = await fetch(url)`
 
-**CR-05 — Unhandled promise rejection**
-Do NOT require `try/catch` around every `await`. Flag ONLY when the diff indicates the error will be dropped or crash unexpectedly, e.g.:
-- A background task / fire-and-forget Promise has no `.catch()` and is not awaited
-- A new `catch {}` / `.catch(() => {})` swallows errors silently
-- A new top-level `await` or process startup path has no visible error boundary and would terminate the process
-- ❌ `void doWork()` where `doWork()` can reject and there's no `.catch()`
-- ✅ `void doWork().catch(err => logger.error(err))`
-- Severity: 🟡
+**CR-05 — Unhandled promise rejection** 🟡
+Flag only when: a fire-and-forget Promise has no `.catch()`, or a `catch {}` swallows errors silently, or a top-level `await` has no error boundary.
+- ❌ `void doWork()` (can reject, no `.catch()`) → ✅ `void doWork().catch(err => logger.error(err))`
 
-**CR-06 — Async function referenced but not called**
-An async method referenced as a value without `()` is a silent no-op — the function is never executed.
-- ❌ `created() { this.fetchData }` — missing `()`
-- ✅ `created() { this.fetchData() }` or `created() { void this.fetchData() }`
-- Severity: 🔴
+**CR-06 — Async referenced but not called** 🔴
+Async method referenced as a value without `()` is a silent no-op.
+- ❌ `created() { this.fetchData }` → ✅ `created() { this.fetchData() }`
 
-**CR-07 — Unbounded Promise.all**
-`Promise.all` over a large or unbounded array fires all Promises concurrently and can exhaust DB connections or hit rate limits. Flag when the input array is not bounded by a known small constant.
-- ❌ `await Promise.all(userIds.map(id => db.findOne(id)))` where `userIds` may have hundreds of entries
-- ✅ Process in fixed-size batches, or use a concurrency-limited utility like `p-limit`
-- Severity: 🟡
+**CR-07 — Unbounded Promise.all** 🟡
+`Promise.all` over a large/unbounded array exhausts connections or hits rate limits. Process in fixed batches or use `p-limit`.
 
 ---
 
 ## Control flow
 
-**CR-08 — Missing else/default branch**
-An `if/else if` chain or `switch` that handles a finite set of values but has no terminal `else` or `default` silently ignores unexpected values.
-- ✅ Add a branch that throws or logs an error for unrecognized inputs
-- Severity: 🟡
+**CR-08 — Missing else/default branch** 🟡
+An `if/else if` chain or `switch` over a finite value set with no terminal `else`/`default` silently ignores unexpected values.
 
-**CR-09 — Infinite loop**
-A loop whose condition variable is never mutated inside the loop body will run forever.
-- ❌ `while (i < 10) { processItem(); }` — `i` is never incremented
-- ✅ `while (i < 10) { processItem(); i++; }`
-- Severity: 🔴
+**CR-09 — Infinite loop** 🔴
+Loop condition variable never mutated inside the loop body.
+- ❌ `while (i < 10) { processItem(); }` (i never incremented)
 
-**CR-10 — Off-by-one**
-Array iteration must use `< arr.length`, not `<= arr.length`. Slice/substring end indices are exclusive.
-- ❌ `for (let i = 0; i <= arr.length; i++)` — accesses `arr[arr.length]` which is `undefined`
-- ✅ `for (let i = 0; i < arr.length; i++)`
-- Severity: 🔴
+**CR-10 — Off-by-one** 🔴
+Use `< arr.length`, not `<= arr.length`. Slice/substring end indices are exclusive.
 
-**CR-11 — Dead code masking skipped cleanup**
-Unlike a pure style issue, flag unreachable code specifically when a required side effect (cleanup, error reporting, resource release) is silently skipped because it follows an unconditional `return` or `throw`.
-- ❌ `return result; conn.release();` — connection is never released
-- Severity: 🔴
+**CR-11 — Dead code masking skipped cleanup** 🔴
+Unreachable code specifically when a cleanup, error report, or resource release is silently skipped.
+- ❌ `return result; conn.release();`
 
 ---
 
-## State and mutation
+## State / mutation
 
-**CR-12 — Direct state mutation in React**
-React state must never be mutated directly. Direct assignment bypasses the reactivity system and causes stale UI or missed re-renders.
-- ❌ `count = count + 1; setCount(count)` — mutates local variable before setter, causes stale reads
-- ✅ `setCount(prev => prev + 1)` — always derive next state from previous
-- Severity: 🔴
+**CR-12 — Direct state mutation in React** 🔴
+Never mutate state directly. Always use the setter with a functional update.
+- ❌ `count = count + 1; setCount(count)` → ✅ `setCount(prev => prev + 1)`
 
-**CR-13 — useEffect without dependency array**
-A React `useEffect` with no second argument (not even `[]`) runs after every render. When the effect performs state updates or API calls, this creates an infinite re-render loop.
-- ❌ `useEffect(() => { fetchData(); })` — no `[]`
-- ✅ `useEffect(() => { fetchData(); }, [])` or list the correct dependencies
-- Severity: 🔴
+**CR-13 — useEffect without dependency array** 🔴
+No second argument means the effect runs after every render — causes infinite loops when the effect does state updates or API calls.
+- ❌ `useEffect(() => { fetchData(); })` → ✅ add `[]` or correct deps
 
-**CR-14 — Stale closure in loop or callback**
-Variables declared with `var` inside loops and captured by reference in async callbacks resolve to their final value, not the value at capture time.
-- ❌ `for (var i = 0; i < 5; i++) { setTimeout(() => console.log(i), 100) }` — logs `5` five times
-- ✅ Replace `var` with `let`, or explicitly capture: `const n = i; setTimeout(() => console.log(n), 100)`
-- Severity: 🟡
+**CR-14 — Stale closure in loop** 🟡
+`var` inside loops captured by async callbacks resolves to the final value, not the capture-time value.
+- ❌ `for (var i = 0; i < 5; i++) { setTimeout(() => console.log(i), 100) }` → ✅ use `let` or capture `const n = i`
 
 ---
 
 ## TypeScript type safety
 
-**CR-15 — Explicit `any` type**
-`any` must not appear in new code. Use `unknown` when the type is genuinely unknown, then narrow with type guards.
-- Exception: third-party interop with an explicit comment explaining why
-- ❌ `function process(data: any)` → ✅ `function process(data: unknown)`
-- Severity: 🟡
+**CR-15 — Explicit `any`** 🟡
+Use `unknown` + type guards instead. Exception: third-party interop with an explanatory comment.
 
-**CR-16 — Missing return type annotation**
-Non-trivial functions — those with branching logic, async operations, or multiple return paths — should have explicit return type annotations.
-- ❌ `async function getUser(id: string) { ... }` with implicit return type
-- ✅ `async function getUser(id: string): Promise<User | null> { ... }`
-- To reduce noise, ONLY flag for exported/public APIs added or modified in the diff.
-- Severity: 🔵
+**CR-16 — Missing return type on public API** 🔵
+Non-trivial exported/public functions should have explicit return type annotations. Only flag for APIs added/modified in the diff.
+- ❌ `async function getUser(id: string) { ... }` → ✅ `async function getUser(id: string): Promise<User | null>`
 
-**CR-17 — Non-null assertion on potentially null value**
-The `!` non-null assertion on a value that can legitimately be null defers a crash to runtime with no context.
+**CR-17 — Non-null assertion on nullable** 🟡
+`!` on a legitimately-nullable value defers a crash with no context.
 - ❌ `document.getElementById('root')!.innerHTML = html`
-- ✅ `const root = document.getElementById('root'); if (!root) throw new Error('Root element not found'); root.innerHTML = html`
-- Severity: 🟡
 
-**CR-18 — Loose equality**
-`==` (loose equality) in TypeScript/modern JS is almost always unintentional. Use `===` for type-safe comparison.
-- ❌ `if (userId == 0)` — matches both `0` and `''` and `false`
-- Exception: `== null` is an accepted pattern for checking both `null` and `undefined` simultaneously — do not flag when this dual-match is clearly the intent
-- ✅ `if (userId === 0)` for a specific value check
-- Severity: 🟡
+**CR-18 — Loose equality** 🟡
+Use `===`. Exception: `== null` is accepted for checking both `null` and `undefined` simultaneously.
+- ❌ `if (userId == 0)` → ✅ `if (userId === 0)`
 
 ---
 
-## Severity guide
-
-Include the rule ID at the start of the `body` field in each JSON comment.
-- 🔴 `"severity": "error"` — will crash or produce wrong results in normal usage
-- 🟡 `"severity": "warning"` — dangerous patterns likely to cause bugs under certain conditions
-- 🔵 `"severity": "info"` — type annotation gaps that reduce safety without immediate runtime impact
+> See `_shared/shared-config.md` for severity guide and output format.
