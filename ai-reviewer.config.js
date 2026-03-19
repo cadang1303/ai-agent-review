@@ -18,7 +18,7 @@ export default {
   ignorePatterns: [
     "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
     ".min.js", ".min.css", "dist/", "build/", "__snapshots__/",
-    ".svg", ".png", ".jpg", ".ico",
+    ".svg", ".png", ".jpg", ".ico", ".md"
   ],
-  maxTokensPerChunk: 8000,
+  maxTokensPerChunk: 3000,
 };
