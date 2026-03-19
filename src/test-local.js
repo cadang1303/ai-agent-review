@@ -71,7 +71,7 @@ console.log("📦  Model: openai/gpt-4o-mini (GitHub Models — free)\n");
 const results = await reviewFiles(MOCK_FILES, {
   apiKey: token,
   model: "openai/gpt-4o-mini",
-  skills: ["convention", "lint", "security", "logic", "performance"],
+  skills: ["code-quality", "logic", "reliability", "security"],
   failOnError: false,
   ignorePatterns: ["package-lock.json"],
 });

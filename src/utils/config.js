@@ -17,7 +17,7 @@ export const GITHUB_MODELS = {
 
 const DEFAULTS = {
   model: GITHUB_MODELS.GPT_4O_MINI,
-  skills: ["convention", "lint", "security", "logic", "tests"],
+  skills: ["code-quality", "logic", "reliability", "security"],
   ignorePatterns: [
     "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
     ".min.js", ".min.css", "dist/", "build/", "__snapshots__/",
