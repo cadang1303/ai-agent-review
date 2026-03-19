@@ -1,15 +1,12 @@
 /**
- * prompt.js — loads skill instructions from SKILL.md files at runtime.
+ * prompt.js — loads skill instructions from SKILL.md files and builds the review prompt.
  *
- * Follows the Agent Skills open format (agentskills.io):
- *   Each skill is a directory containing a SKILL.md file with YAML frontmatter.
+ * Agent Skills format (agentskills.io):
+ *   Each skill is a directory containing a SKILL.md with YAML frontmatter.
  *
  * Skill resolution order (first match wins):
- *   1. <project-root>/.ai-reviewer-skills/<skill>/SKILL.md  (per-project override)
- *   2. <reviewer-root>/skills/<skill>/SKILL.md               (built-in default)
- *
- * The frontmatter is stripped before sending to the model — only the
- * Markdown body (the actual instructions) is included in the prompt.
+ *   1. <project-root>/.ai-reviewer-skills/<skill>/SKILL.md  ← per-project override
+ *   2. <npm-package>/skills/<skill>/SKILL.md                 ← built-in default
  */
 
 import { readFileSync, existsSync } from "fs";
@@ -17,7 +14,6 @@ import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-
 const BUILTIN_SKILLS_DIR = resolve(__dirname, "../../skills");
 const PROJECT_SKILLS_DIR = resolve(process.cwd(), ".ai-reviewer-skills");
 
@@ -37,10 +33,6 @@ const EXT_LANGUAGE_MAP = {
   ".c":    "C",
 };
 
-/**
- * Strips YAML frontmatter from a SKILL.md file.
- * Returns only the Markdown body (the instructions).
- */
 function stripFrontmatter(content) {
   const trimmed = content.trim();
   if (!trimmed.startsWith("---")) return trimmed;
@@ -49,37 +41,30 @@ function stripFrontmatter(content) {
   return trimmed.slice(end + 4).trim();
 }
 
-/**
- * Loads a single skill's instructions from its SKILL.md file.
- * Checks project override first, then built-in.
- * Returns null if not found in either location.
- */
 function loadSkill(skillName) {
-  // 1. Per-project override: .ai-reviewer-skills/<skill>/SKILL.md
   const projectPath = resolve(PROJECT_SKILLS_DIR, skillName, "SKILL.md");
   if (existsSync(projectPath)) {
-    const raw = readFileSync(projectPath, "utf-8");
-    console.log(`   Using project skill: ${skillName}`);
-    return stripFrontmatter(raw);
+    console.log(`   Using project skill override: ${skillName}`);
+    return stripFrontmatter(readFileSync(projectPath, "utf-8"));
   }
-
-  // 2. Built-in: skills/<skill>/SKILL.md
   const builtinPath = resolve(BUILTIN_SKILLS_DIR, skillName, "SKILL.md");
   if (existsSync(builtinPath)) {
     return stripFrontmatter(readFileSync(builtinPath, "utf-8"));
   }
-
   console.warn(`⚠️  Skill not found: "${skillName}"`);
-  console.warn(`    Checked: ${projectPath}`);
-  console.warn(`    Checked: ${builtinPath}`);
   return null;
 }
 
 /**
- * Builds the full review prompt for a file diff.
- * Loads each enabled skill's SKILL.md body and concatenates them.
+ * Builds the review prompt for one chunk of a diff.
+ *
+ * @param {string} filename
+ * @param {string} patch      - The diff text for this chunk
+ * @param {number|null} startLine - Right-side line number of the first line in this chunk.
+ *                                  Used to tell the model which line numbers to use.
+ * @param {string[]} enabledSkills
  */
-export function buildReviewPrompt(filename, patch, enabledSkills) {
+export function buildReviewPrompt(filename, patch, startLine, enabledSkills) {
   const ext = "." + filename.split(".").pop().toLowerCase();
   const language = EXT_LANGUAGE_MAP[ext] ?? "unknown language";
 
@@ -88,30 +73,43 @@ export function buildReviewPrompt(filename, patch, enabledSkills) {
     .filter(Boolean)
     .join("\n\n---\n\n");
 
+  // Tell the model exactly how to count lines so it returns file-level numbers
+  const lineInstruction = startLine != null
+    ? `The first added line (+) in this diff is line ${startLine} in the file.
+Count lines from there when reporting the "line" field — report the actual file line number, not the position within this diff chunk.`
+    : `Report the line number of the added (+) line where each issue appears, as it would appear in the file.`;
+
   return `Review this ${language} diff from file \`${filename}\`.
 
-Apply only the skills listed below. Skip anything not covered by them.
-Be concise — only report real issues, not style preferences.
+${lineInstruction}
+
+Apply only the skills listed below. Flag only what is visible in the diff.
 
 ${skillInstructions}
 
 ---
 
-Return ONLY valid JSON in this exact shape — no markdown fences, no preamble:
+Return ONLY valid JSON — no markdown fences, no preamble:
 {
   "comments": [
     {
-      "line": <integer — the + line number in the diff where the issue is>,
+      "line": <integer — the file line number of the added (+) line where the issue is>,
       "skill": "<skill name>",
       "severity": "error" | "warning" | "info",
-      "body": "<clear, actionable description of the issue and how to fix it>"
+      "body": "<rule ID and clear, actionable description>"
     }
   ],
   "summary": "<1-2 sentence overall assessment>",
-  "score": <integer 0-100, where 100 is perfect>
+  "score": <integer 0-100>
 }
 
-If there are no issues: { "comments": [], "summary": "No issues found.", "score": 100 }
+Rules for the "line" field:
+- Use the RIGHT-SIDE (+) line number as it appears in the actual file, not the diff position
+- Only report lines that start with + in the diff (added lines)
+- Do NOT report lines starting with - (removed lines) or space (context lines)
+- If the issue spans multiple lines, use the first affected + line
+
+If no issues: { "comments": [], "summary": "No issues found.", "score": 100 }
 
 Diff:
 \`\`\`diff

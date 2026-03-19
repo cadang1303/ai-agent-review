@@ -1,6 +1,5 @@
 /**
- * Parses the Claude response into structured review data.
- * Handles partial JSON and strips accidental markdown fences.
+ * parser.js — parses the model's JSON review response.
  */
 
 export function parseReview(rawText, filename) {
@@ -12,15 +11,20 @@ export function parseReview(rawText, filename) {
   try {
     const parsed = JSON.parse(text);
 
-    // Normalise and validate each comment
     const comments = (parsed.comments ?? [])
       .filter((c) => c && typeof c.body === "string" && c.body.length > 0)
-      .map((c) => ({
-        line: parseInt(c.line) || 1,
-        skill: String(c.skill ?? "general").toLowerCase(),
-        severity: validateSeverity(c.severity),
-        body: c.body,
-      }));
+      .map((c) => {
+        const line = parseInt(c.line);
+        return {
+          // Keep null if line is missing/invalid — do NOT fallback to 1.
+          // Fallback to 1 causes all bad-line comments to pile up on line 1.
+          // The caller in index.js will skip comments with null lines.
+          line: Number.isFinite(line) && line > 0 ? line : null,
+          skill: String(c.skill ?? "general").toLowerCase(),
+          severity: validateSeverity(c.severity),
+          body: c.body,
+        };
+      });
 
     return {
       comments,
@@ -34,7 +38,7 @@ export function parseReview(rawText, filename) {
       try {
         return parseReview(match[0], filename);
       } catch {
-        // Fall through to empty result
+        // Fall through
       }
     }
 
