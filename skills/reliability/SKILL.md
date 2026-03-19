@@ -9,14 +9,20 @@ metadata:
 
 # Reliability Review
 
-Review the diff for issues that reduce production reliability. Flag only what is visible in the diff — do not speculate about files not shown.
+Review the diff for issues that reduce production reliability in realistic conditions (CI flakiness, leaks, scaling pain).
+To reduce noise: comment only on concrete risks visible in the diff, not generic "add more tests" advice when the repo/workflow does not show tests.
+Flag only what is visible in the diff — do not speculate about files not shown.
 
 ---
 
 ## Test structure
 
 **RL-01 — New logic without tests**
-Any new exported function, class method, or API handler added in the diff must have at least one corresponding test. If logic is added and no test file is modified or created, flag the gap.
+Flag missing tests ONLY when the repository clearly contains tests (e.g. there is a `test/`, `tests/`, `__tests__/` convention in the diff/repo, or the diff itself touches test tooling), and the diff adds/modifies non-trivial logic.
+Do NOT flag when:
+- The change is a trivial refactor/rename
+- The repo appears to have no test setup
+If logic is added and no test file is modified or created, flag the gap.
 - Flag: New `calculateDiscount(price, qty)` with no matching test file change
 - ✅ Add a test covering the normal case and at least one edge case (zero, negative, empty input)
 - Severity: 🟡
