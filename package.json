@@ -11,6 +11,8 @@
   },
   "keywords": ["github-actions", "code-review", "ai", "github-models", "pull-request", "free", "agent-skills"],
   "license": "MIT",
+  "engines": { "node": ">=24.0.0" },
+  "files": ["src/", "skills/", "templates/"],
   "dependencies": {
     "openai": "^4.0.0",
     "@octokit/rest": "^21.0.0"
