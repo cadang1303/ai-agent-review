@@ -166,9 +166,13 @@ export async function getUnresolvedBotComments(octokit, { owner, repo, pullNumbe
       const line  = comment.line ?? comment.originalLine ?? comment.originalStartLine;
       if (!line) continue;
 
-      const fingerprint = `${comment.path}:${line}:${skill}`;
-      unresolved.add(fingerprint);
-      console.log(`   Unresolved: ${fingerprint}`);
+      const base = `${comment.path}:${line}:${skill}`;
+      const fpMatch = comment.body?.match(/<!--\s*ai-pr-reviewer-fp:([a-f0-9]{6,40})\s*-->/i);
+      const v2 = fpMatch ? `${base}:${fpMatch[1].toLowerCase()}` : null;
+
+      unresolved.add(base);
+      if (v2) unresolved.add(v2);
+      console.log(`   Unresolved: ${base}${v2 ? " (v2)" : ""}`);
     }
 
     if (!threads.pageInfo.hasNextPage) break;
