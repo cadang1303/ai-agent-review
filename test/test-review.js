@@ -55,3 +55,9 @@ fetchData();
 console.log(addNumbers('10', 5));
 runLoop();
 console.log(isEven(4));
+
+const abc = () => {
+    return abc()
+}
+
+console.log(abasadsadsa)
