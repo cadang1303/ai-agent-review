@@ -30,7 +30,7 @@ Secret values must not be written to logs, even in debug paths. Log only the key
 - Severity: 🔴
 
 **SEC-03 — Secret file tracked**
-`.env`, `*.pem`, `*.key`, `id_rsa`, `credentials.json`, `secrets.yml`, and similar files must not appear in the diff as new tracked files.
+`.env`, `*.pem`, `*.key`, `*.p12`, `*.jks`, `id_rsa`, `credentials.json`, `service-account*.json`, `secrets.yml`, and similar files must not appear in the diff as new tracked files.
 - Severity: 🔴
 
 ---
