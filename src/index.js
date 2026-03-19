@@ -34,13 +34,13 @@ export async function reviewFiles(files, options = {}) {
 
     console.log(`  Reviewing: ${file.filename}`);
 
-    // chunkPatch now returns { patch, startLine } objects
+    // Each chunk has: patch, annotated (with [NNN] prefixes), lineMap
     const chunks = chunkPatch(file.patch, config.maxTokensPerChunk);
     const fileComments = [];
 
-    for (const { patch, startLine } of chunks) {
-      // Pass startLine into the prompt so model knows real file line numbers
-      const prompt = buildReviewPrompt(file.filename, patch, startLine, config.skills);
+    for (const { annotated, lineMap } of chunks) {
+      // Model sees annotated diff with [NNN] position markers
+      const prompt = buildReviewPrompt(file.filename, annotated, config.skills);
 
       let response;
       try {
@@ -60,23 +60,36 @@ export async function reviewFiles(files, options = {}) {
       }
 
       if (!response?.choices?.length) {
-        console.warn(`  ⚠️  Unexpected response shape for ${file.filename}`);
+        console.warn(`  ⚠️  Unexpected response for ${file.filename}`);
         continue;
       }
 
       const text = response.choices[0].message?.content ?? "";
       const parsed = parseReview(text, file.filename);
 
-      // Filter out comments where the model returned an invalid line number
-      const valid = parsed.comments.filter(c => {
-        if (c.line === null) {
-          console.warn(`  ⚠️  Skipping comment with invalid line in ${file.filename}: "${c.body.slice(0, 60)}..."`);
-          return false;
+      for (const comment of parsed.comments) {
+        if (comment.diffPos === null) {
+          console.warn(`  ⚠️  Skipping comment with invalid diffPos in ${file.filename}`);
+          continue;
         }
-        return true;
-      });
 
-      fileComments.push(...valid);
+        // Convert diffPos → real file line number using the map
+        const fileLine = lineMap.get(comment.diffPos);
+
+        if (!fileLine) {
+          // Model returned a diffPos that doesn't correspond to an added line
+          // (e.g. a context line or removed line position)
+          console.warn(`  ⚠️  diffPos ${comment.diffPos} in ${file.filename} is not an added line — skipping`);
+          continue;
+        }
+
+        fileComments.push({
+          line: fileLine,
+          skill: comment.skill,
+          severity: comment.severity,
+          body: comment.body,
+        });
+      }
     }
 
     allResults.push({ filename: file.filename, comments: fileComments });
