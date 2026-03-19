@@ -1,27 +1,31 @@
 /**
  * ai-pr-reviewer — core module
- * Uses Anthropic Claude via the official SDK.
- * Requires ANTHROPIC_API_KEY set as a GitHub Actions secret.
+ * Uses GitHub Models (free) via the OpenAI-compatible API.
  */
 
-import Anthropic from "@anthropic-ai/sdk";
+import OpenAI from "openai";
 import { buildReviewPrompt } from "./utils/prompt.js";
 import { parseReview } from "./utils/parser.js";
 import { chunkPatch } from "./utils/chunker.js";
-import { loadConfig } from "./utils/config.js";
+import { loadConfig, GITHUB_MODELS_ENDPOINT } from "./utils/config.js";
 
 export async function reviewFiles(files, options = {}) {
   const config = options.apiKey ? options : await loadConfig(options);
 
   if (!config.apiKey) {
     throw new Error(
-      "No ANTHROPIC_API_KEY found.\n" +
-      "→ Get your key at: console.anthropic.com\n" +
-      "→ Add it as a GitHub Actions secret named ANTHROPIC_API_KEY"
+      "No API key found.\n" +
+      "→ Create a PAT at: github.com/settings/tokens (Models → Read)\n" +
+      "→ Add as repo secret: GH_MODELS_TOKEN"
     );
   }
 
-  const client = new Anthropic({ apiKey: config.apiKey });
+  const client = new OpenAI({
+    baseURL: GITHUB_MODELS_ENDPOINT,
+    apiKey: config.apiKey,
+    defaultHeaders: { "X-GitHub-Api-Version": "2022-11-28" },
+  });
+
   const allResults = [];
 
   for (const file of files) {
@@ -30,19 +34,23 @@ export async function reviewFiles(files, options = {}) {
 
     console.log(`  Reviewing: ${file.filename}`);
 
+    // chunkPatch now returns { patch, startLine } objects
     const chunks = chunkPatch(file.patch, config.maxTokensPerChunk);
     const fileComments = [];
 
-    for (const chunk of chunks) {
-      const prompt = buildReviewPrompt(file.filename, chunk, config.skills);
+    for (const { patch, startLine } of chunks) {
+      // Pass startLine into the prompt so model knows real file line numbers
+      const prompt = buildReviewPrompt(file.filename, patch, startLine, config.skills);
 
       let response;
       try {
-        response = await client.messages.create({
+        response = await client.chat.completions.create({
           model: config.model,
           max_tokens: 1024,
-          system: getSystemPrompt(),
-          messages: [{ role: "user", content: prompt }],
+          messages: [
+            { role: "system", content: getSystemPrompt() },
+            { role: "user",   content: prompt },
+          ],
         });
       } catch (err) {
         console.error(`  ⚠️  API call failed for ${file.filename}: ${err.message}`);
@@ -51,16 +59,24 @@ export async function reviewFiles(files, options = {}) {
         continue;
       }
 
-      // Anthropic SDK: response.content is an array of blocks
-      const textBlock = response.content?.find(b => b.type === "text");
-      if (!textBlock) {
-        console.warn(`  ⚠️  No text block in response for ${file.filename}`);
-        console.warn("     Full response:", JSON.stringify(response, null, 2));
+      if (!response?.choices?.length) {
+        console.warn(`  ⚠️  Unexpected response shape for ${file.filename}`);
         continue;
       }
 
-      const parsed = parseReview(textBlock.text, file.filename);
-      fileComments.push(...parsed.comments);
+      const text = response.choices[0].message?.content ?? "";
+      const parsed = parseReview(text, file.filename);
+
+      // Filter out comments where the model returned an invalid line number
+      const valid = parsed.comments.filter(c => {
+        if (c.line === null) {
+          console.warn(`  ⚠️  Skipping comment with invalid line in ${file.filename}: "${c.body.slice(0, 60)}..."`);
+          return false;
+        }
+        return true;
+      });
+
+      fileComments.push(...valid);
     }
 
     allResults.push({ filename: file.filename, comments: fileComments });
