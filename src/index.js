@@ -1,7 +1,6 @@
 /**
  * ai-pr-reviewer — core module
  * Uses GitHub Models (free) via the OpenAI-compatible API.
- * Requires GH_MODELS_TOKEN (PAT with models:read scope) as a GitHub Actions secret.
  */
 
 import OpenAI from "openai";
@@ -16,9 +15,8 @@ export async function reviewFiles(files, options = {}) {
   if (!config.apiKey) {
     throw new Error(
       "No API key found.\n" +
-      "GitHub Models requires a PAT with models:read scope.\n" +
-      "→ Create one at: github.com/settings/tokens\n" +
-      "→ Add it as a GitHub Actions secret named GH_MODELS_TOKEN"
+      "→ Create a PAT at: github.com/settings/tokens (Models → Read)\n" +
+      "→ Add as repo secret: GH_MODELS_TOKEN"
     );
   }
 
@@ -36,11 +34,13 @@ export async function reviewFiles(files, options = {}) {
 
     console.log(`  Reviewing: ${file.filename}`);
 
+    // chunkPatch now returns { patch, startLine } objects
     const chunks = chunkPatch(file.patch, config.maxTokensPerChunk);
     const fileComments = [];
 
-    for (const chunk of chunks) {
-      const prompt = buildReviewPrompt(file.filename, chunk, config.skills);
+    for (const { patch, startLine } of chunks) {
+      // Pass startLine into the prompt so model knows real file line numbers
+      const prompt = buildReviewPrompt(file.filename, patch, startLine, config.skills);
 
       let response;
       try {
@@ -60,14 +60,23 @@ export async function reviewFiles(files, options = {}) {
       }
 
       if (!response?.choices?.length) {
-        console.warn(`  ⚠️  Unexpected response shape for ${file.filename}:`);
-        console.warn("     ", JSON.stringify(response, null, 2));
+        console.warn(`  ⚠️  Unexpected response shape for ${file.filename}`);
         continue;
       }
 
       const text = response.choices[0].message?.content ?? "";
       const parsed = parseReview(text, file.filename);
-      fileComments.push(...parsed.comments);
+
+      // Filter out comments where the model returned an invalid line number
+      const valid = parsed.comments.filter(c => {
+        if (c.line === null) {
+          console.warn(`  ⚠️  Skipping comment with invalid line in ${file.filename}: "${c.body.slice(0, 60)}..."`);
+          return false;
+        }
+        return true;
+      });
+
+      fileComments.push(...valid);
     }
 
     allResults.push({ filename: file.filename, comments: fileComments });
