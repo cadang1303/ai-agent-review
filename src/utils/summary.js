@@ -1,11 +1,7 @@
 /**
- * Builds the aggregated summary comment posted to the PR.
- * Includes a hidden HTML marker so the bot can find and delete its own
- * previous summary before posting a fresh one on each new commit.
+ * summary.js — builds the PR summary comment.
  */
 
-// Unique marker embedded in every summary comment.
-// Used to identify and delete previous bot summaries.
 export const SUMMARY_MARKER = "<!-- ai-pr-reviewer-summary -->";
 
 export function buildSummary(results, totalErrors, totalWarnings, config) {
@@ -23,13 +19,11 @@ export function buildSummary(results, totalErrors, totalWarnings, config) {
       ? `${totalWarnings} warning(s) — review recommended`
       : "All checks passed";
 
-  const modelLabel = config.model
-    .replace("claude-", "")
-    .replace(/-\d{8}$/, "")
-    .replace("openai/", "")
-    .replace("meta/", "")
-    .replace("microsoft/", "")
-    .replace("deepseek/", "");
+  // Strip publisher prefix cleanly: "openai/gpt-4o-mini" → "gpt-4o-mini"
+  // Works for any provider without hardcoding a list of prefixes
+  const modelLabel = config.model.includes("/")
+    ? config.model.split("/").pop()
+    : config.model.replace(/-\d{8}$/, "");
 
   const fileRows = results
     .filter((r) => r.comments.length > 0)
@@ -52,8 +46,6 @@ export function buildSummary(results, totalErrors, totalWarnings, config) {
 
   const skillsUsed = config.skills.join(", ");
 
-  // SUMMARY_MARKER is invisible in the rendered comment but lets the bot
-  // find this comment on the next run and delete it before re-posting.
   return `${SUMMARY_MARKER}
 ## ${statusEmoji} AI Code Review
 

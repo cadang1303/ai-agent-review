@@ -10,13 +10,12 @@ import { SUMMARY_MARKER } from "./summary.js";
 
 /**
  * Finds and deletes ALL previous summary comments.
- * Uses GraphQL to get full (untruncated) comment bodies and handles any
- * number of comments efficiently in one query.
+ * Uses GraphQL for full (untruncated) comment bodies.
+ * Only logs when a marker is found or deleted — not every comment.
  */
 export async function deletePreviousSummary(octokit, { owner, repo, pullNumber }) {
-  console.log("🧹  Scanning for previous summary comments (GraphQL)...");
+  console.log("🧹  Scanning for previous summary comments...");
 
-  // GraphQL returns full body text — REST API truncates long comment bodies
   const query = `
     query GetIssueComments($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
       repository(owner: $owner, name: $repo) {
@@ -40,12 +39,10 @@ export async function deletePreviousSummary(octokit, { owner, repo, pullNumber }
   while (true) {
     let response;
     try {
-      response = await octokit.graphql(query, {
-        owner, repo, number: pullNumber, cursor,
-      });
+      response = await octokit.graphql(query, { owner, repo, number: pullNumber, cursor });
     } catch (err) {
       console.warn(`⚠️  GraphQL comment fetch failed: ${err.message}`);
-      console.warn("    Falling back to REST for summary deletion...");
+      console.warn("    Falling back to REST...");
       await deletePreviousSummaryREST(octokit, { owner, repo, pullNumber });
       return;
     }
@@ -54,20 +51,15 @@ export async function deletePreviousSummary(octokit, { owner, repo, pullNumber }
     if (!comments) break;
 
     for (const c of comments.nodes) {
-      const hasMarker = c.body?.includes(SUMMARY_MARKER);
-      console.log(`   #${c.databaseId} author="${c.author?.login}" hasMarker=${hasMarker}`);
+      if (!c.body?.includes(SUMMARY_MARKER)) continue; // skip silently — no log noise
 
-      if (hasMarker) {
-        try {
-          await octokit.issues.deleteComment({
-            owner, repo,
-            comment_id: c.databaseId,
-          });
-          console.log(`   ✅ Deleted summary #${c.databaseId}`);
-          deleted++;
-        } catch (err) {
-          console.warn(`   ⚠️  Could not delete #${c.databaseId}: ${err.message}`);
-        }
+      console.log(`   Found summary #${c.databaseId} by ${c.author?.login}`);
+      try {
+        await octokit.issues.deleteComment({ owner, repo, comment_id: c.databaseId });
+        console.log(`   ✅ Deleted summary #${c.databaseId}`);
+        deleted++;
+      } catch (err) {
+        console.warn(`   ⚠️  Could not delete #${c.databaseId}: ${err.message}`);
       }
     }
 
@@ -78,7 +70,6 @@ export async function deletePreviousSummary(octokit, { owner, repo, pullNumber }
   console.log(deleted === 0 ? "   No previous summary found" : `   Removed ${deleted} old summary comment(s)`);
 }
 
-// REST fallback in case GraphQL fails
 async function deletePreviousSummaryREST(octokit, { owner, repo, pullNumber }) {
   let page = 1;
   while (true) {
@@ -87,13 +78,12 @@ async function deletePreviousSummaryREST(octokit, { owner, repo, pullNumber }) {
     });
     if (comments.length === 0) break;
     for (const c of comments) {
-      if (c.body?.includes(SUMMARY_MARKER)) {
-        try {
-          await octokit.issues.deleteComment({ owner, repo, comment_id: c.id });
-          console.log(`   ✅ Deleted summary #${c.id} (REST fallback)`);
-        } catch (err) {
-          console.warn(`   ⚠️  Could not delete #${c.id}: ${err.message}`);
-        }
+      if (!c.body?.includes(SUMMARY_MARKER)) continue;
+      try {
+        await octokit.issues.deleteComment({ owner, repo, comment_id: c.id });
+        console.log(`   ✅ Deleted summary #${c.id} (REST fallback)`);
+      } catch (err) {
+        console.warn(`   ⚠️  Could not delete #${c.id}: ${err.message}`);
       }
     }
     if (comments.length < 100) break;
@@ -135,8 +125,8 @@ const REVIEW_THREADS_QUERY = `
  * Returns a Set of fingerprints for unresolved bot inline comments.
  * Fingerprint: "<path>:<line>:<skill>"
  *
- * Handles null lines (multi-line comments) by falling back to originalLine
- * and then originalStartLine so fingerprints are never "path:null:skill".
+ * isResolved = true  → not in set → bot re-flags if issue still exists
+ * isOutdated = true  → not in set → bot re-flags on new line
  */
 export async function getUnresolvedBotComments(octokit, { owner, repo, pullNumber }) {
   const unresolved = new Set();
@@ -160,8 +150,8 @@ export async function getUnresolvedBotComments(octokit, { owner, repo, pullNumbe
     if (!threads) break;
 
     for (const thread of threads.nodes) {
-      if (thread.isResolved) continue; // resolved → allow re-flagging
-      if (thread.isOutdated) continue; // outdated → allow re-flagging on new line
+      if (thread.isResolved) continue;
+      if (thread.isOutdated) continue;
 
       const comment = thread.comments?.nodes?.[0];
       if (!comment) continue;
@@ -173,13 +163,8 @@ export async function getUnresolvedBotComments(octokit, { owner, repo, pullNumbe
       if (!skillMatch) continue;
 
       const skill = skillMatch[1].toLowerCase();
-
-      // Resolve line number — multi-line comments can have null `line`
-      const line = comment.line
-        ?? comment.originalLine
-        ?? comment.originalStartLine;
-
-      if (!line) continue; // genuinely no line info — skip
+      const line  = comment.line ?? comment.originalLine ?? comment.originalStartLine;
+      if (!line) continue;
 
       const fingerprint = `${comment.path}:${line}:${skill}`;
       unresolved.add(fingerprint);
